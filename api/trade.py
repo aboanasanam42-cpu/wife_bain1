@@ -63,11 +63,27 @@ def get_min_notional(market):
     return min_cost
 
 
+def sanitize_key(key: str) -> str:
+    """تنظيف شامل لمفاتيح API من أي مسافات أو أسطر أو علامات اقتباس غير مقصودة"""
+    if not key:
+        return ""
+    # إزالة أي علامات اقتباس محيطة
+    cleaned = key.strip()
+    if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+        cleaned = cleaned[1:-1].strip()
+    # إزالة أي مسافات أو محارف مخفية
+    return ''.join(c for c in cleaned if c.isprintable() and not c.isspace())
+
+
 def execute_trade_cycle():
     """تنفيذ دورة فحص ومتاجرة سريعة واحدة (Single Execution Loop)"""
-    # 1. قراءة متغيرات البيئة المسجلة في Vercel
-    api_key = (os.environ.get("BINANCE_API_KEY") or os.environ.get("BINANCE_KEY") or "").strip()
-    api_secret = (os.environ.get("BINANCE_API_SECRET") or os.environ.get("BINANCE_SECRET") or "").strip()
+    # 1. قراءة متغيرات البيئة المسجلة في Vercel وتنظيفها بعناية
+    raw_api_key = os.environ.get("BINANCE_API_KEY") or os.environ.get("BINANCE_KEY") or ""
+    raw_api_secret = os.environ.get("BINANCE_API_SECRET") or os.environ.get("BINANCE_SECRET") or ""
+
+    api_key = sanitize_key(raw_api_key)
+    api_secret = sanitize_key(raw_api_secret)
+
     symbol = os.environ.get("SYMBOL", "BTC/USDT").strip()
     target_order_usd = float(os.environ.get("TARGET_ORDER_USD", "4.0"))
     max_positions = int(os.environ.get("MAX_POSITIONS", "2"))
@@ -75,7 +91,10 @@ def execute_trade_cycle():
     stop_loss_pct = float(os.environ.get("STOP_LOSS_PCT", "1.0"))
 
     if not api_key or not api_secret:
-        raise ValueError("BINANCE_API_KEY and BINANCE_API_SECRET must be set in Vercel Environment Variables")
+        raise ValueError(
+            "مفاتيح BINANCE_API_KEY و BINANCE_API_SECRET مفقودة أو غير معينة. "
+            "يرجى ضبطها في Vercel Environment Variables والتأكد من إعادة النشر (Redeploy)."
+        )
 
     # 2. تهيئة منصة بينانس للتداول الفوري (Spot) عبر مكتبة ccxt
     exchange = ccxt.binance({
@@ -263,10 +282,16 @@ class handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(response_body)
         except Exception as e:
+            err_msg = str(e)
+            hint = None
+            if "-2008" in err_msg or "Invalid Api-Key ID" in err_msg:
+                hint = "خطأ -2008: مفتاح Binance API Key غير صحيح أو تم حذفه أو منتهي الصلاحية في حساب بينانس. يرجى إنشاء مفتاح API جديد من Binance وتحديثه في Vercel مع تفعيل صلاحية Spot Trading والتأكد من Unrestricted IP."
+
             error_data = {
                 "status": "error",
                 "error_type": type(e).__name__,
-                "message": str(e),
+                "message": err_msg,
+                "hint": hint,
                 "timestamp": datetime.utcnow().isoformat() + "Z"
             }
             response_body = json.dumps(error_data, ensure_ascii=False, indent=2).encode('utf-8')
