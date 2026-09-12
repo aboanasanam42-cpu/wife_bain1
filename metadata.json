@@ -1,6 +1,0 @@
-{
-  "name": "Binance Spot Bot",
-  "description": "24/7 Cloud Binance Spot Trading Bot in Python for BTC/USDT with risk management, min-notional auto-detection, and Bot-Hosting.net deployment.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

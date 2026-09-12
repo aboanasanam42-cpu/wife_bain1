@@ -69,9 +69,9 @@ def execute_trade_cycle():
     api_key = (os.environ.get("BINANCE_API_KEY") or os.environ.get("BINANCE_KEY") or "").strip()
     api_secret = (os.environ.get("BINANCE_API_SECRET") or os.environ.get("BINANCE_SECRET") or "").strip()
     symbol = os.environ.get("SYMBOL", "BTC/USDT").strip()
-    target_order_usd = float(os.environ.get("TARGET_ORDER_USD", "5.5"))
+    target_order_usd = float(os.environ.get("TARGET_ORDER_USD", "4.0"))
     max_positions = int(os.environ.get("MAX_POSITIONS", "2"))
-    take_profit_pct = float(os.environ.get("TAKE_PROFIT_PCT", "1.5"))
+    take_profit_pct = float(os.environ.get("TAKE_PROFIT_PCT", "1.0"))
     stop_loss_pct = float(os.environ.get("STOP_LOSS_PCT", "1.0"))
 
     if not api_key or not api_secret:
