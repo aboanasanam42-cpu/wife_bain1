@@ -342,10 +342,30 @@ fun FilesTab() {
     Spacer(modifier = Modifier.height(10.dp))
 
     FileItemCard(
-      fileName = "requirements.txt",
-      description = "مكتبات التشغيل المطلوبة لمنصة Bot-Hosting.net:\nccxt>=4.2.0\npython-dotenv>=1.0.0",
+      fileName = "api/trade.py",
+      description = "دالة Vercel Serverless Function الكاملة مع معالج BaseHTTPRequestHandler لتنفيذ دورة فحص ومتاجرة سريعة وإرجاع النتائج بصيغة JSON.",
       onCopy = {
-        copyToClipboard(context, "requirements.txt", "ccxt>=4.2.0\npython-dotenv>=1.0.0")
+        copyToClipboard(context, "api/trade.py", "تم إنشاء /api/trade.py بنجاح داخل المشروع!")
+      }
+    )
+
+    Spacer(modifier = Modifier.height(10.dp))
+
+    FileItemCard(
+      fileName = "vercel.json",
+      description = "ملف تكوين Vercel لإعادة توجيه كافة الطلبات إلى المسار /api/trade بنجاح.",
+      onCopy = {
+        copyToClipboard(context, "vercel.json", "{\n  \"rewrites\": [\n    { \"source\": \"/(.*)\", \"destination\": \"/api/trade\" }\n  ]\n}")
+      }
+    )
+
+    Spacer(modifier = Modifier.height(10.dp))
+
+    FileItemCard(
+      fileName = "requirements.txt",
+      description = "مكتبات التشغيل المطلوبة لمنصة Vercel و Bot-Hosting:\nccxt\npython-dotenv",
+      onCopy = {
+        copyToClipboard(context, "requirements.txt", "ccxt\npython-dotenv")
       }
     )
 
@@ -435,8 +455,8 @@ fun DeploymentTab() {
   val scrollState = rememberScrollState()
 
   val gitCommands = """git init
-git add main.py requirements.txt .env.example .gitignore README.md .github/
-git commit -m "Initial commit: Binance Spot 24/7 Cloud Trading Bot"
+git add requirements.txt vercel.json api/trade.py main.py README.md .env.example .gitignore .github/
+git commit -m "feat: configure vercel serverless function with ccxt binance spot bot"
 git branch -M main
 git remote add origin https://github.com/aboanasanam42-cpu/wife_bain1.git
 git push -u origin main"""

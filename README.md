@@ -27,10 +27,27 @@
 
 ## 📁 هيكلية الملفات الأساسية
 
-- `main.py`: كود البوت التنفيذي المتكامل.
+- `api/trade.py`: دالة Vercel Serverless Function لمعالجة التداول الفوري وإرجاع ردود JSON.
+- `vercel.json`: تكوين توجيه الطلبات إلى `/api/trade` تلقائياً.
 - `requirements.txt`: الحزم والمكتبات المطلوبة (`ccxt`, `python-dotenv`).
+- `main.py`: كود البوت التنفيذي المتواصل (لحلقة 24/7 على Bot-Hosting أو الخوادم الخاصة).
 - `.env.example`: نموذج للمتغيرات البيئية المطلوبة.
 - `.gitignore`: لمنع رفع المفاتيح وملف الصفقات والملفات المؤقتة إلى GitHub.
+
+---
+
+## ⚡ التشغيل على Vercel (Serverless Function)
+
+1. اربط مستودع GitHub `aboanasanam42-cpu/wife_bain1` بمنصة [Vercel](https://vercel.com).
+2. أضف متغيرات البيئة في إعدادات المشروع (Settings > Environment Variables):
+   - `BINANCE_API_KEY`
+   - `BINANCE_API_SECRET`
+   - `SYMBOL` (افتراضياً: BTC/USDT)
+   - `TARGET_ORDER_USD` (افتراضياً: 5.5)
+   - `MAX_POSITIONS` (افتراضياً: 2)
+   - `TAKE_PROFIT_PCT` (افتراضياً: 1.5)
+   - `STOP_LOSS_PCT` (افتراضياً: 1.0)
+3. بعد النشر، يمكنك استدعاء الدالة عبر الرابط المباشر `https://your-project.vercel.app/` أو ضبط Vercel Cron لتشغيلها تلقائياً كل دقيقة أو 5 دقائق!
 
 ---
 
@@ -42,11 +59,11 @@
 # 1. تهيئة مستودع Git محلي
 git init
 
-# 2. إضافة جميع الملفات المطلوبة وملفات GitHub Actions
-git add main.py requirements.txt .env.example .gitignore README.md .github/
+# 2. إضافة جميع الملفات المطلوبة وملفات Vercel و GitHub Actions
+git add requirements.txt vercel.json api/trade.py main.py README.md .env.example .gitignore .github/
 
-# 3. حفظ التغييرات الأولى
-git commit -m "Initial commit: Binance Spot 24/7 Cloud Trading Bot"
+# 3. حفظ التغييرات
+git commit -m "feat: configure vercel serverless function with ccxt binance spot bot"
 
 # 4. تغيير اسم الفرع الرئيسي إلى main
 git branch -M main

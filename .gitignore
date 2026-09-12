@@ -24,4 +24,5 @@ positions.json
 venv/
 .venv/
 bot.log
-
+.build-outputs/
+debug.keystore.base64
