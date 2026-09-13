@@ -1,6 +1,8 @@
 {
-  "regions": ["fra1"],
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/api/trade" }
-  ]
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/trade.py": {
+      "maxDuration": 60
+    }
+  }
 }

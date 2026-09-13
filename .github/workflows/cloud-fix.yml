@@ -1,0 +1,45 @@
+name: Apply Vercel trading safety fixes
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[cloud-fix-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch endpoint and remove this one-time workflow
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('api/trade.py')
+          s=p.read_text()
+          marker='TRADE_TRIGGER_TOKEN = os.environ.get("TRADE_TRIGGER_TOKEN", "").strip()'
+          if marker not in s:
+              s=s.replace('POSITIONS_FILE = "/tmp/positions.json"\n', '''POSITIONS_FILE = "/tmp/positions.json"\nTRADE_TRIGGER_TOKEN = os.environ.get("TRADE_TRIGGER_TOKEN", "").strip()\nLIVE_TRADING = os.environ.get("LIVE_TRADING", "false").strip().lower() in ("true", "1", "yes")\n\ndef require_trigger_token(handler):\n    if not TRADE_TRIGGER_TOKEN:\n        raise PermissionError("TRADE_TRIGGER_TOKEN is not configured")\n    auth = handler.headers.get("Authorization", "")\n    token = auth[7:].strip() if auth.lower().startswith("bearer ") else handler.headers.get("X-Trade-Token", "").strip()\n    if token != TRADE_TRIGGER_TOKEN:\n        raise PermissionError("Unauthorized trade trigger")\n\ndef create_market_order(exchange, side, symbol, amount):\n    if not LIVE_TRADING:\n        return {"id":"DRY-RUN", "side":side, "symbol":symbol, "amount":amount, "average":None, "filled":amount, "dry_run":True}\n    if side == "buy":\n        return exchange.create_market_buy_order(symbol, amount)\n    return exchange.create_market_sell_order(symbol, amount)\n''')
+          s=s.replace('exchange.create_market_sell_order(symbol, sell_amount)', 'create_market_order(exchange, "sell", symbol, sell_amount)')
+          s=s.replace('exchange.create_market_buy_order(symbol, buy_amount)', 'create_market_order(exchange, "buy", symbol, buy_amount)')
+          s=s.replace("float(order.get('average', current_price))", "float(order.get('average') or current_price)")
+          s=s.replace('return {\n        "status": "success",', 'return {\n        "status": "success",\n        "live_trading": LIVE_TRADING,')
+          s=s.replace('    def _handle_request(self):\n        try:\n            result = execute_trade_cycle()', '    def _handle_request(self):\n        try:\n            require_trigger_token(self)\n            result = execute_trade_cycle()')
+          p.write_text(s)
+          Path('vercel.json').write_text('''{\n  "$schema": "https://openapi.vercel.sh/vercel.json",\n  "functions": {\n    "api/trade.py": {"maxDuration": 60}\n  }\n}\n''')
+          env=Path('.env.example')
+          if env.exists():
+              e=env.read_text()
+              if 'TRADE_TRIGGER_TOKEN=' not in e:
+                  e=e.replace('BINANCE_API_SECRET=your_binance_api_secret_here\n', 'BINANCE_API_SECRET=your_binance_api_secret_here\nTRADE_TRIGGER_TOKEN=generate-a-long-random-token\nLIVE_TRADING=false\n')
+                  env.write_text(e)
+          PY
+          python -m py_compile api/trade.py main.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add api/trade.py vercel.json .env.example
+          git rm .github/workflows/cloud-fix.yml
+          git commit -m "fix: secure Vercel trading trigger and runtime [cloud-fix-applied]"
+          git push
