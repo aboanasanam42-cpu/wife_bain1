@@ -19,6 +19,23 @@ except ImportError:
 import ccxt
 
 POSITIONS_FILE = "/tmp/positions.json"
+TRADE_TRIGGER_TOKEN = os.environ.get("TRADE_TRIGGER_TOKEN", "").strip()
+LIVE_TRADING = os.environ.get("LIVE_TRADING", "false").strip().lower() in ("true", "1", "yes")
+
+def require_trigger_token(handler):
+    if not TRADE_TRIGGER_TOKEN:
+        raise PermissionError("TRADE_TRIGGER_TOKEN is not configured")
+    auth = handler.headers.get("Authorization", "")
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else handler.headers.get("X-Trade-Token", "").strip()
+    if token != TRADE_TRIGGER_TOKEN:
+        raise PermissionError("Unauthorized trade trigger")
+
+def create_market_order(exchange, side, symbol, amount):
+    if not LIVE_TRADING:
+        return {"id":"DRY-RUN", "side":side, "symbol":symbol, "amount":amount, "average":None, "filled":amount, "dry_run":True}
+    if side == "buy":
+        return exchange.create_market_buy_order(symbol, amount)
+    return exchange.create_market_sell_order(symbol, amount)
 
 
 def load_positions():
@@ -193,8 +210,8 @@ def execute_trade_cycle():
         if pnl_pct >= take_profit_pct:
             sell_amount = float(exchange.amount_to_precision(symbol, amount))
             try:
-                order = exchange.create_market_sell_order(symbol, sell_amount)
-                exec_price = float(order.get('average', current_price))
+                order = create_market_order(exchange, "sell", symbol, sell_amount)
+                exec_price = float(order.get('average') or current_price)
                 actions_taken.append({
                     "action": "TAKE_PROFIT_SELL",
                     "order_id": order.get('id'),
@@ -214,8 +231,8 @@ def execute_trade_cycle():
         elif trailing_active and drop_from_peak_pct >= trailing_callback_pct and pnl_pct >= 0.25:
             sell_amount = float(exchange.amount_to_precision(symbol, amount))
             try:
-                order = exchange.create_market_sell_order(symbol, sell_amount)
-                exec_price = float(order.get('average', current_price))
+                order = create_market_order(exchange, "sell", symbol, sell_amount)
+                exec_price = float(order.get('average') or current_price)
                 realized_pnl = ((exec_price - entry_price) / entry_price) * 100.0
                 actions_taken.append({
                     "action": "TRAILING_TAKE_PROFIT_SELL",
@@ -238,8 +255,8 @@ def execute_trade_cycle():
         elif pnl_pct <= -stop_loss_pct:
             sell_amount = float(exchange.amount_to_precision(symbol, amount))
             try:
-                order = exchange.create_market_sell_order(symbol, sell_amount)
-                exec_price = float(order.get('average', current_price))
+                order = create_market_order(exchange, "sell", symbol, sell_amount)
+                exec_price = float(order.get('average') or current_price)
                 actions_taken.append({
                     "action": "STOP_LOSS_SELL",
                     "order_id": order.get('id'),
@@ -259,8 +276,8 @@ def execute_trade_cycle():
         elif max_hold_time_sec > 0 and hold_duration_sec >= max_hold_time_sec and pnl_pct <= stagnant_exit_pct:
             sell_amount = float(exchange.amount_to_precision(symbol, amount))
             try:
-                order = exchange.create_market_sell_order(symbol, sell_amount)
-                exec_price = float(order.get('average', current_price))
+                order = create_market_order(exchange, "sell", symbol, sell_amount)
+                exec_price = float(order.get('average') or current_price)
                 held_minutes = int(hold_duration_sec // 60)
                 actions_taken.append({
                     "action": "ANTI_STAGNATION_SELL",
@@ -368,7 +385,7 @@ def execute_trade_cycle():
                     buy_amount = float(exchange.amount_to_precision(symbol, buy_amount))
 
                 try:
-                    buy_order = exchange.create_market_buy_order(symbol, buy_amount)
+                    buy_order = create_market_order(exchange, "buy", symbol, buy_amount)
                     filled_price = float(buy_order.get('average', ask_price))
                     filled_qty = float(buy_order.get('filled', buy_amount))
                     total_cost = filled_price * filled_qty
@@ -414,6 +431,7 @@ def execute_trade_cycle():
 
     return {
         "status": "success",
+        "live_trading": LIVE_TRADING,
         "symbol": symbol,
         "current_price": current_price,
         "usdt_balance": free_usdt,
@@ -444,6 +462,7 @@ class handler(BaseHTTPRequestHandler):
 
     def _handle_request(self):
         try:
+            require_trigger_token(self)
             result = execute_trade_cycle()
             response_body = json.dumps(result, ensure_ascii=False, indent=2).encode('utf-8')
             self.send_response(200)
