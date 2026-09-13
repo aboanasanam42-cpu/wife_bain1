@@ -264,10 +264,17 @@ def execute_trade_cycle():
                 "reason": f"Insufficient USDT balance (Required: ${effective_order_cost:.2f}, Available: ${free_usdt:.2f})"
             })
     else:
-        actions_taken.append({
-            "action": "HOLD",
-            "reason": f"Max concurrent positions reached ({len(positions)}/{max_positions})"
-        })
+        if not cooldown_ok:
+            remaining_cd = int(buy_cooldown_sec - (datetime.utcnow().timestamp() - last_buy_ts))
+            actions_taken.append({
+                "action": "HOLD",
+                "reason": f"Buy cooldown active ({max(0, remaining_cd)}s remaining)"
+            })
+        else:
+            actions_taken.append({
+                "action": "HOLD",
+                "reason": f"Max concurrent positions reached ({len(positions)}/{max_positions})"
+            })
 
     return {
         "status": "success",
