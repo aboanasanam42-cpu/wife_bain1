@@ -85,10 +85,11 @@ def execute_trade_cycle():
     api_secret = sanitize_key(raw_api_secret)
 
     symbol = os.environ.get("SYMBOL", "BTC/USDT").strip()
-    target_order_usd = float(os.environ.get("TARGET_ORDER_USD", "4.0"))
+    target_order_usd = float(os.environ.get("TARGET_ORDER_USD", "5.5"))
     max_positions = int(os.environ.get("MAX_POSITIONS", "2"))
-    take_profit_pct = float(os.environ.get("TAKE_PROFIT_PCT", "1.0"))
+    take_profit_pct = float(os.environ.get("TAKE_PROFIT_PCT", "1.5"))
     stop_loss_pct = float(os.environ.get("STOP_LOSS_PCT", "1.0"))
+    buy_cooldown_sec = int(os.environ.get("BUY_COOLDOWN_SEC", "180"))
 
     if not api_key or not api_secret:
         raise ValueError(
@@ -137,10 +138,12 @@ def execute_trade_cycle():
                 positions.append({
                     "id": str(last_trade.get('id', 'inferred')),
                     "symbol": symbol,
-                    "amount": float(last_trade.get('amount', free_btc)),
+                    "amount": min(float(last_trade.get('amount', free_btc)), free_btc),
                     "entry_price": float(last_trade.get('price', current_price)),
                     "cost": float(last_trade.get('cost', free_btc * current_price)),
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "created_at_ts": datetime.utcnow().timestamp(),
+                    "side": "buy"
                 })
                 save_positions(positions)
         except Exception:
@@ -198,8 +201,24 @@ def execute_trade_cycle():
     positions = remaining_positions
     save_positions(positions)
 
-    # 6. فحص شرط الشراء (إذا كان عدد الصفقات أقل من MAX_POSITIONS ويتوفر رصيد USDT كافٍ)
-    if len(positions) < max_positions:
+    # 6. تحديث الرصيد بعد TP/SL؛ لا تعتمد على الرصيد الذي جُلب قبل البيع.
+    balance = exchange.fetch_balance()
+    free_usdt = float(balance['free'].get('USDT', 0.0))
+
+    # 7. فحص شرط الشراء. في بيئة Serverless لا توجد ذاكرة مضمونة بين الطلبات،
+    # لذلك نستخدم وقت آخر شراء المحفوظ في position نفسها كحماية إضافية.
+    last_buy_ts = 0.0
+    for pos in positions:
+        if pos.get("side", "buy") == "buy":
+            try:
+                last_buy_ts = max(last_buy_ts, float(pos.get("created_at_ts", 0.0)))
+            except (TypeError, ValueError):
+                pass
+
+    cooldown_ok = (datetime.utcnow().timestamp() - last_buy_ts) >= buy_cooldown_sec
+
+    # 8. فحص شرط الشراء (إذا كان عدد الصفقات أقل من MAX_POSITIONS ويتوفر رصيد USDT كافٍ)
+    if len(positions) < max_positions and cooldown_ok:
         effective_order_cost = max(target_order_usd, min_notional + 0.15)
         if free_usdt >= effective_order_cost:
             raw_amount = effective_order_cost / ask_price
@@ -223,7 +242,9 @@ def execute_trade_cycle():
                     "amount": filled_qty,
                     "entry_price": filled_price,
                     "cost": total_cost,
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "created_at_ts": datetime.utcnow().timestamp(),
+                    "side": "buy"
                 }
                 positions.append(new_pos)
                 save_positions(positions)
@@ -270,6 +291,13 @@ class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self._handle_request()
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        self.end_headers()
 
     def _handle_request(self):
         try:

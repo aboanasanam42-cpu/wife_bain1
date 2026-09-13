@@ -9,7 +9,6 @@ positions.json
 bot.log
 
 # Local and build files ignored from GitHub repository
-.github/
 .gradle/
 build/
 .build-outputs/

@@ -37,9 +37,9 @@ API_KEY = (os.environ.get("BINANCE_API_KEY") or os.environ.get("BINANCE_KEY") or
 API_SECRET = (os.environ.get("BINANCE_API_SECRET") or os.environ.get("BINANCE_SECRET") or "").strip()
 
 SYMBOL = os.environ.get("SYMBOL", "BTC/USDT").strip()
-TARGET_ORDER_USD = float(os.environ.get("TARGET_ORDER_USD", "4.0"))  # القيمة المستهدفة
+TARGET_ORDER_USD = float(os.environ.get("TARGET_ORDER_USD", "5.5"))  # القيمة المستهدفة
 MAX_POSITIONS = int(os.environ.get("MAX_POSITIONS", "2"))            # الحد الأقصى للصفقات المتزامنة
-TAKE_PROFIT_PCT = float(os.environ.get("TAKE_PROFIT_PCT", "1.0"))   # نسبة جني الأرباح +1.0%
+TAKE_PROFIT_PCT = float(os.environ.get("TAKE_PROFIT_PCT", "1.5"))   # نسبة جني الأرباح +1.5%
 STOP_LOSS_PCT = float(os.environ.get("STOP_LOSS_PCT", "1.0"))       # نسبة وقف الخسارة -1.0%
 LOOP_INTERVAL_SEC = int(os.environ.get("LOOP_INTERVAL_SEC", "10"))  # وقت الانتظار بين الدورات بالثواني
 BUY_COOLDOWN_SEC = int(os.environ.get("BUY_COOLDOWN_SEC", "180"))   # فاصل زمني بين عمليات الشراء لمنع التكرار اللحظي
