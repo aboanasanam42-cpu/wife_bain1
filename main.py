@@ -13,7 +13,7 @@ import logging
 import urllib.request
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from datetime import datetime
+from datetime import datetime, timezone
 import ccxt
 from dotenv import load_dotenv
 
@@ -51,6 +51,13 @@ def sanitize_key(key):
     if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in "\"'":
         cleaned = cleaned[1:-1].strip()
     return "".join(c for c in cleaned if c.isprintable() and not c.isspace())
+
+def mask_key(k):
+    if not k:
+        return "غير محدد (NOT_SET)"
+    if len(k) <= 8:
+        return f"{k[:2]}... (طول {len(k)})"
+    return f"{k[:4]}...{k[-4:]} (طول {len(k)} حرف)"
 
 API_KEY = sanitize_key(os.environ.get("BINANCE_API_KEY") or os.environ.get("BINANCE_KEY") or "")
 API_SECRET = sanitize_key(os.environ.get("BINANCE_API_SECRET") or os.environ.get("BINANCE_SECRET") or "")
@@ -134,7 +141,9 @@ BOT_STATUS = {
     "spread_pct": None,
     "open_positions_count": 0,
     "public_ip": current_public_ip,
-    "started_at": datetime.utcnow().isoformat() + "Z"
+    "api_key_detected": bool(API_KEY),
+    "api_key_preview": mask_key(API_KEY),
+    "started_at": datetime.now(timezone.utc).isoformat()
 }
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -151,7 +160,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         payload = {
             **BOT_STATUS,
             "open_positions": positions_data,
-            "server_time": datetime.utcnow().isoformat() + "Z"
+            "server_time": datetime.now(timezone.utc).isoformat()
         }
         self.wfile.write(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
 
@@ -255,35 +264,70 @@ def calculate_rsi(closes, period=14):
 # 5. الدورة الرئيسية للبوت (24/7 Cloud Loop)
 # ==========================================
 def main():
+    # بدء خادم الصحة والنطاق العام لـ Railway أولاً لضمان استقرار الخدمة وجاهزية النطاق
+    start_health_server()
+
     logger.info("=" * 65)
     logger.info("بدء تشغيل بوت التداول الفوري السحابي (Binance Spot Bot)")
     logger.info(f"الزوج المعتمد: {SYMBOL} (Spot حصراً) | التداول الحقيقي: {LIVE_TRADING}")
+    logger.info(f"مفتاح API: {mask_key(API_KEY)} | المفتاح السري: {mask_key(API_SECRET)}")
+    logger.info(f"عنوان IP السيرفر (Railway Amsterdam): {current_public_ip}")
     logger.info(f"أقصى عدد صفقات متزامنة: {MAX_POSITIONS} | قيمة الصفقة: {TARGET_ORDER_USD} USDT")
     logger.info(f"تتبع السعر اللحظي (Trailing Stop): تفعيل عند +{TRAILING_ACTIVATION_PCT}% | ارتداد للبيع: {TRAILING_CALLBACK_PCT}%")
     logger.info(f"معيار منع تجمد العملة (Anti-Stagnation): إغلاق بعد {MAX_HOLD_TIME_SEC // 60} دقيقة إذا كان العائد <= +{STAGNANT_EXIT_PCT}%")
     logger.info(f"هدف وقف الخسارة الصارم (Emergency SL): -{STOP_LOSS_PCT}%")
     logger.info("=" * 65)
 
+    check_api_keys()
     exchange = init_exchange()
 
-    # تحميل الأسواق والتحقق من الزوج وحدود التداول
-    try:
-        markets = exchange.load_markets()
-        if SYMBOL not in markets:
-            logger.error(f"الرمز {SYMBOL} غير متاح في أسواق Binance Spot!")
-            sys.exit(1)
-        market = markets[SYMBOL]
-        min_notional = get_min_notional(market)
-        logger.info(f"تم فحص حدود الزوج بنجاح: الحد الأدنى لقيمة الصفقة (min_notional) هو: {min_notional} USDT")
-    except Exception as e:
-        logger.error(f"فشل أثناء تحميل بيانات الأسواق من Binance: {e}")
-        sys.exit(1)
+    # تحميل الأسواق والتحقق من الزوج وحدود التداول مع إعادة المحاولة الذكية
+    while True:
+        try:
+            markets = exchange.load_markets()
+            if SYMBOL not in markets:
+                logger.error(f"الرمز {SYMBOL} غير متاح في أسواق Binance Spot!")
+                time.sleep(15)
+                continue
+            market = markets[SYMBOL]
+            min_notional = get_min_notional(market)
+            logger.info(f"تم فحص حدود الزوج بنجاح: الحد الأدنى لقيمة الصفقة (min_notional) هو: {min_notional} USDT")
+            BOT_STATUS["status"] = "initialized"
+            BOT_STATUS.pop("error", None)
+            break
+        except Exception as e:
+            err_str = str(e)
+            if "-2008" in err_str or "Invalid Api-Key ID" in err_str:
+                BOT_STATUS["status"] = "invalid_api_key"
+                BOT_STATUS["error"] = "Invalid Api-Key ID (-2008). Check Railway Variables."
+                logger.error("=" * 65)
+                logger.error("❌ خطأ من منصة بينانس (Code -2008: Invalid Api-Key ID):")
+                logger.error("مفتاح API المدخل غير صالح أو غير معترف به لدى خوادم بينانس.")
+                logger.error(f"  - المفتاح المقروء حالياً: {mask_key(API_KEY)}")
+                logger.error(f"  - المفتاح السري المقروء: {mask_key(API_SECRET)}")
+                logger.error(f"  - عنوان IP السيرفر (Railway Amsterdam): {current_public_ip}")
+                logger.error("الخطوات السريعة لحل المشكلة:")
+                logger.error("  1. توجه إلى منصة بينانس -> حسابك -> إدارة واجهة المستخدم (API Management).")
+                logger.error("  2. تأكد من نسخ 'API Key' كاملاً ولصقه في متغير BINANCE_API_KEY في Railway.")
+                logger.error("  3. تأكد من نسخ 'Secret Key' كاملاً ولصقه في متغير BINANCE_API_SECRET في Railway.")
+                logger.error("  4. إذا كانت قيود IP مفعلة (Restrict access to trusted IPs only)، أضف عنوان السيرفر:")
+                logger.error(f"     {current_public_ip}")
+                logger.error("     أو اختر 'غير مقيد' (Unrestricted) مؤقتاً لتفعيل الربط مباشرة.")
+                logger.error("  5. تأكد من تفعيل صلاحيات: Enable Reading + Enable Spot & Margin Trading.")
+                logger.error("  السيرفر سيعيد المحاولة تلقائياً كل 20 ثانية دون إيقاف الحاوية...")
+                logger.error("=" * 65)
+            elif "restricted location" in err_str.lower() or "451" in err_str:
+                BOT_STATUS["status"] = "geo_restricted_451"
+                BOT_STATUS["error"] = "Binance 451 restricted location. Server region restricted."
+                logger.error(f"⛔ حظر موقع بينانس (HTTP 451). منطقة السيرفر محظورة.")
+            else:
+                BOT_STATUS["status"] = "exchange_error"
+                BOT_STATUS["error"] = err_str
+                logger.error(f"فشل أثناء تحميل بيانات الأسواق من Binance: {e}")
+            time.sleep(20)
 
     positions = load_positions()
     logger.info(f"تم تحميل {len(positions)} صفقة نشطة سابقة من الذاكرة/الملف.")
-
-    # بدء خادم الصحة والنطاق العام لـ Railway
-    start_health_server()
 
     last_buy_timestamp = 0.0
 
@@ -306,7 +350,7 @@ def main():
 
             # تحديث لوحة الحالة للنطاق العام وفحص الصحة
             BOT_STATUS["status"] = "running"
-            BOT_STATUS["last_cycle"] = datetime.utcnow().isoformat() + "Z"
+            BOT_STATUS["last_cycle"] = datetime.now(timezone.utc).isoformat()
             BOT_STATUS["last_price"] = current_price
             BOT_STATUS["spread_pct"] = round(spread_pct, 4)
             BOT_STATUS["open_positions_count"] = len(positions)
