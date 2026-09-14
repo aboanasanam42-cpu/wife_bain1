@@ -874,4 +874,595 @@ def main() -> None:
                     drop_from_peak_pct = (
                         (highest_price - current_price)
                         / highest_price
-      
+                        * 100.0
+                    )
+
+                hold_duration_sec = max(
+                    0.0,
+                    now_ts - created_at_ts,
+                )
+
+                hold_minutes = int(
+                    hold_duration_sec // 60
+                )
+
+                # --------------------------------------------
+                # Trailing activation
+                # --------------------------------------------
+
+                if (
+                    TRAILING_STOP_ENABLED
+                    and peak_gain_pct
+                    >= TRAILING_ACTIVATION_PCT
+                ):
+                    if not trailing_active:
+                        logger.info(
+                            "Trailing activated for "
+                            "position #%d at +%.3f%%.",
+                            index,
+                            peak_gain_pct,
+                        )
+
+                    trailing_active = True
+
+                position["trailing_active"] = (
+                    trailing_active
+                )
+
+                logger.info(
+                    "Position #%d | entry=%.2f | "
+                    "peak=%.2f | pnl=%+.3f%% | "
+                    "hold=%dm | trailing=%s",
+                    index,
+                    entry_price,
+                    highest_price,
+                    pnl_pct,
+                    hold_minutes,
+                    trailing_active,
+                )
+
+                # --------------------------------------------
+                # A. Trailing exit
+                # --------------------------------------------
+
+                if (
+                    trailing_active
+                    and drop_from_peak_pct
+                    >= TRAILING_CALLBACK_PCT
+                ):
+
+                    success, _, _ = (
+                        execute_market_sell(
+                            exchange,
+                            amount,
+                            "trailing",
+                            current_price,
+                            entry_price,
+                        )
+                    )
+
+                    if success:
+                        continue
+
+                # --------------------------------------------
+                # B. Stop loss
+                # --------------------------------------------
+
+                if pnl_pct <= -STOP_LOSS_PCT:
+
+                    success, _, _ = (
+                        execute_market_sell(
+                            exchange,
+                            amount,
+                            "stop_loss",
+                            current_price,
+                            entry_price,
+                        )
+                    )
+
+                    if success:
+                        continue
+
+                # --------------------------------------------
+                # C. Anti stagnation
+                # --------------------------------------------
+
+                stagnation_condition = (
+                    pnl_pct <= STAGNANT_EXIT_PCT
+                    or pnl_pct
+                    < TRAILING_ACTIVATION_PCT
+                )
+
+                if (
+                    MAX_HOLD_TIME_SEC > 0
+                    and hold_duration_sec
+                    >= MAX_HOLD_TIME_SEC
+                    and stagnation_condition
+                ):
+
+                    success, _, _ = (
+                        execute_market_sell(
+                            exchange,
+                            amount,
+                            "anti_stagnation",
+                            current_price,
+                            entry_price,
+                        )
+                    )
+
+                    if success:
+                        continue
+
+                remaining_positions.append(
+                    position
+                )
+
+            # Save state after position management.
+            if remaining_positions != positions:
+                positions = remaining_positions
+                save_positions(positions)
+
+            # ------------------------------------------------
+            # 4. New entry
+            # ------------------------------------------------
+
+            if len(positions) >= MAX_POSITIONS:
+                logger.info(
+                    "Maximum active positions reached: "
+                    "%d/%d",
+                    len(positions),
+                    MAX_POSITIONS,
+                )
+
+            else:
+
+                effective_order_cost = max(
+                    TARGET_ORDER_USD,
+                    min_notional + 0.20,
+                )
+
+                time_since_buy = (
+                    now_ts
+                    - last_buy_timestamp
+                )
+
+                if (
+                    time_since_buy
+                    < BUY_COOLDOWN_SEC
+                ):
+
+                    remaining = int(
+                        BUY_COOLDOWN_SEC
+                        - time_since_buy
+                    )
+
+                    logger.info(
+                        "Buy cooldown active: %ds remaining.",
+                        remaining,
+                    )
+
+                elif (
+                    LIVE_TRADING
+                    and free_usdt
+                    < effective_order_cost
+                ):
+
+                    logger.info(
+                        "Insufficient USDT. "
+                        "Required=%.2f, available=%.2f",
+                        effective_order_cost,
+                        free_usdt,
+                    )
+
+                elif spread_pct > MAX_SPREAD_PCT:
+
+                    logger.info(
+                        "Spread protection active: "
+                        "%.3f%% > %.3f%%",
+                        spread_pct,
+                        MAX_SPREAD_PCT,
+                    )
+
+                else:
+
+                    # ----------------------------------------
+                    # Market analysis
+                    # ----------------------------------------
+
+                    ohlcv = exchange.fetch_ohlcv(
+                        SYMBOL,
+                        timeframe="1m",
+                        limit=20,
+                    )
+
+                    if not ohlcv or len(ohlcv) < 15:
+                        logger.info(
+                            "Not enough candle data yet."
+                        )
+
+                    else:
+
+                        highs = [
+                            float(candle[2])
+                            for candle in ohlcv
+                        ]
+
+                        lows = [
+                            float(candle[3])
+                            for candle in ohlcv
+                        ]
+
+                        closes = [
+                            float(candle[4])
+                            for candle in ohlcv
+                        ]
+
+                        minimum_low = min(lows)
+                        maximum_high = max(highs)
+
+                        volatility_pct = 0.0
+
+                        if minimum_low > 0:
+                            volatility_pct = (
+                                (
+                                    maximum_high
+                                    - minimum_low
+                                )
+                                / minimum_low
+                                * 100.0
+                            )
+
+                        current_rsi = calculate_rsi(
+                            closes,
+                            period=14,
+                        )
+
+                        recent_high = max(
+                            highs[-15:]
+                        )
+
+                        recent_low = min(
+                            lows[-15:]
+                        )
+
+                        dip_pct = 0.0
+                        rebound_pct = 0.0
+
+                        if recent_high > 0:
+                            dip_pct = (
+                                (
+                                    recent_high
+                                    - recent_low
+                                )
+                                / recent_high
+                                * 100.0
+                            )
+
+                        if recent_low > 0:
+                            rebound_pct = (
+                                (
+                                    current_price
+                                    - recent_low
+                                )
+                                / recent_low
+                                * 100.0
+                            )
+
+                        logger.info(
+                            "Analysis | volatility=%.3f%% | "
+                            "dip=%.3f%% | rebound=%.3f%% | "
+                            "RSI=%.2f",
+                            volatility_pct,
+                            dip_pct,
+                            rebound_pct,
+                            current_rsi,
+                        )
+
+                        volatility_ok = (
+                            volatility_pct
+                            >= MIN_VOLATILITY_PCT
+                        )
+
+                        dip_ok = (
+                            dip_pct
+                            >= BUY_DIP_MIN_PCT
+                        )
+
+                        rebound_ok = (
+                            rebound_pct
+                            >= BUY_REBOUND_CONFIRM_PCT
+                        )
+
+                        rsi_ok = (
+                            current_rsi
+                            <= BUY_RSI_MAX
+                        )
+
+                        not_at_peak = (
+                            current_price
+                            <= recent_high
+                        )
+
+                        if not volatility_ok:
+                            logger.info(
+                                "Entry rejected: "
+                                "insufficient volatility."
+                            )
+
+                        elif not dip_ok:
+                            logger.info(
+                                "Entry rejected: "
+                                "dip condition not met."
+                            )
+
+                        elif not rebound_ok:
+                            logger.info(
+                                "Entry rejected: "
+                                "rebound confirmation not met."
+                            )
+
+                        elif not rsi_ok:
+                            logger.info(
+                                "Entry rejected: RSI %.2f > %.2f.",
+                                current_rsi,
+                                BUY_RSI_MAX,
+                            )
+
+                        elif not not_at_peak:
+                            logger.info(
+                                "Entry rejected: "
+                                "price is at recent peak."
+                            )
+
+                        else:
+
+                            # --------------------------------
+                            # Calculate order amount
+                            # --------------------------------
+
+                            raw_amount = (
+                                effective_order_cost
+                                / ask_price
+                            )
+
+                            buy_amount = float(
+                                exchange.amount_to_precision(
+                                    SYMBOL,
+                                    raw_amount,
+                                )
+                            )
+
+                            if (
+                                amount_minimum > 0
+                                and buy_amount
+                                < amount_minimum
+                            ):
+                                buy_amount = float(
+                                    exchange.amount_to_precision(
+                                        SYMBOL,
+                                        amount_minimum,
+                                    )
+                                )
+
+                            estimated_cost = (
+                                buy_amount
+                                * ask_price
+                            )
+
+                            if (
+                                buy_amount <= 0
+                                or estimated_cost
+                                < min_notional
+                            ):
+                                logger.warning(
+                                    "Calculated order is below "
+                                    "Binance minimum: "
+                                    "amount=%.12f, cost=%.8f.",
+                                    buy_amount,
+                                    estimated_cost,
+                                )
+
+                            else:
+
+                                mode = (
+                                    "LIVE"
+                                    if LIVE_TRADING
+                                    else "SIMULATION"
+                                )
+
+                                logger.info(
+                                    "BUY signal confirmed | "
+                                    "mode=%s | amount=%.8f | "
+                                    "estimated cost=%.4f USDT",
+                                    mode,
+                                    buy_amount,
+                                    estimated_cost,
+                                )
+
+                                # ----------------------------
+                                # Execute buy
+                                # ----------------------------
+
+                                filled_price = (
+                                    ask_price
+                                )
+
+                                filled_quantity = (
+                                    buy_amount
+                                )
+
+                                total_cost = (
+                                    filled_price
+                                    * filled_quantity
+                                )
+
+                                order_id = (
+                                    f"sim_buy_"
+                                    f"{int(now_ts)}"
+                                )
+
+                                if LIVE_TRADING:
+
+                                    buy_order = (
+                                        exchange.create_market_buy_order(
+                                            SYMBOL,
+                                            buy_amount,
+                                        )
+                                    )
+
+                                    filled_price = float(
+                                        buy_order.get(
+                                            "average"
+                                        )
+                                        or buy_order.get(
+                                            "price"
+                                        )
+                                        or ask_price
+                                    )
+
+                                    filled_quantity = float(
+                                        buy_order.get(
+                                            "filled"
+                                        )
+                                        or buy_amount
+                                    )
+
+                                    total_cost = (
+                                        filled_price
+                                        * filled_quantity
+                                    )
+
+                                    order_id = str(
+                                        buy_order.get(
+                                            "id"
+                                        )
+                                        or "unknown"
+                                    )
+
+                                new_position = {
+                                    "id": order_id,
+                                    "symbol": SYMBOL,
+                                    "side": "buy",
+                                    "amount": filled_quantity,
+                                    "entry_price": filled_price,
+                                    "highest_price": filled_price,
+                                    "cost": total_cost,
+                                    "timestamp": datetime.now(
+                                        timezone.utc
+                                    ).isoformat(),
+                                    "created_at_ts": now_ts,
+                                    "trailing_active": False,
+                                }
+
+                                positions.append(
+                                    new_position
+                                )
+
+                                save_positions(
+                                    positions
+                                )
+
+                                last_buy_timestamp = (
+                                    now_ts
+                                )
+
+                                logger.info(
+                                    "BUY completed | "
+                                    "order=%s | price=%.8f | "
+                                    "amount=%.8f | "
+                                    "cost=%.4f USDT",
+                                    order_id,
+                                    filled_price,
+                                    filled_quantity,
+                                    total_cost,
+                                )
+
+        # ====================================================
+        # Binance errors
+        # ====================================================
+
+        except ccxt.RateLimitExceeded as error:
+
+            logger.warning(
+                "Binance rate limit reached: %s",
+                error,
+            )
+
+            time.sleep(60)
+
+        except (
+            ccxt.NetworkError,
+            ccxt.RequestTimeout,
+        ) as error:
+
+            logger.warning(
+                "Temporary Binance network error: %s",
+                error,
+            )
+
+            time.sleep(15)
+
+        except ccxt.InsufficientFunds as error:
+
+            logger.error(
+                "Insufficient Binance balance: %s",
+                error,
+            )
+
+            time.sleep(20)
+
+        except ccxt.AuthenticationError as error:
+
+            logger.error(
+                "Binance authentication failed: %s",
+                error,
+            )
+
+            logger.error(
+                "Check BINANCE_API_KEY and BINANCE_API_SECRET."
+            )
+
+            time.sleep(60)
+
+        except ccxt.ExchangeError as error:
+
+            logger.error(
+                "Binance exchange error: %s",
+                error,
+            )
+
+            time.sleep(10)
+
+        except KeyboardInterrupt:
+
+            logger.info(
+                "Bot stopped manually."
+            )
+
+            save_positions(
+                positions
+            )
+
+            break
+
+        except Exception as error:
+
+            logger.error(
+                "Unexpected error: %s",
+                error,
+                exc_info=True,
+            )
+
+            time.sleep(10)
+
+        time.sleep(
+            LOOP_INTERVAL_SEC
+        )
+
+
+# ============================================================
+# 11. Entry point
+# ============================================================
+
+if __name__ == "__main__":
+    main()
