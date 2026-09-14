@@ -11,11 +11,14 @@ import time
 import json
 import logging
 import urllib.request
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 import ccxt
 from dotenv import load_dotenv
 
 # Print current public IP safely (useful for Binance API IP whitelisting on Railway/VPS)
+current_public_ip = "unknown"
 try:
     _ip_req = urllib.request.Request("https://api.ipify.org", headers={"User-Agent": "Mozilla/5.0"})
     current_public_ip = urllib.request.urlopen(_ip_req, timeout=5).read().decode().strip()
@@ -114,6 +117,58 @@ def save_positions(positions):
             json.dump(positions, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"خطأ أثناء حفظ الصفقات في الملف: {e}")
+
+
+# ==========================================
+# 3.1 خادم الحالة وفحص الصحة (Railway Health / Public Domain HTTP Server)
+# ==========================================
+BOT_STATUS = {
+    "status": "starting",
+    "bot": "Binance Spot Cloud Bot",
+    "platform": "Railway",
+    "region": "EU West (Amsterdam)",
+    "symbol": SYMBOL,
+    "live_trading": LIVE_TRADING,
+    "last_cycle": None,
+    "last_price": None,
+    "spread_pct": None,
+    "open_positions_count": 0,
+    "public_ip": current_public_ip,
+    "started_at": datetime.utcnow().isoformat() + "Z"
+}
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.end_headers()
+        try:
+            positions_data = load_positions()
+        except Exception:
+            positions_data = []
+        payload = {
+            **BOT_STATUS,
+            "open_positions": positions_data,
+            "server_time": datetime.utcnow().isoformat() + "Z"
+        }
+        self.wfile.write(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
+
+    def log_message(self, format, *args):
+        # Mute routine health checks from logs
+        return
+
+def start_health_server():
+    """تشغيل خادم ويب خفيف على منفذ Railway لتفعيل النطاق العام وفحص الصحة"""
+    port = int(os.environ.get("PORT", "8080"))
+    try:
+        server = HTTPServer(("0.0.0.0", port), HealthHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        logger.info(f"🌐 خادم الحالة وفحص الصحة السحابي يعمل بنجاح على المنفذ {port}")
+    except Exception as e:
+        logger.warning(f"ملاحظة: تعذر تشغيل خادم المنفذ {port}: {e}")
 
 
 # ==========================================
@@ -227,6 +282,9 @@ def main():
     positions = load_positions()
     logger.info(f"تم تحميل {len(positions)} صفقة نشطة سابقة من الذاكرة/الملف.")
 
+    # بدء خادم الصحة والنطاق العام لـ Railway
+    start_health_server()
+
     last_buy_timestamp = 0.0
 
     while True:
@@ -245,6 +303,15 @@ def main():
             free_usdt = float(balance['free'].get('USDT', 0.0))
             free_btc = float(balance['free'].get('BTC', 0.0))
             total_usdt_est = free_usdt + (free_btc * current_price)
+
+            # تحديث لوحة الحالة للنطاق العام وفحص الصحة
+            BOT_STATUS["status"] = "running"
+            BOT_STATUS["last_cycle"] = datetime.utcnow().isoformat() + "Z"
+            BOT_STATUS["last_price"] = current_price
+            BOT_STATUS["spread_pct"] = round(spread_pct, 4)
+            BOT_STATUS["open_positions_count"] = len(positions)
+            BOT_STATUS["free_usdt"] = round(free_usdt, 2)
+            BOT_STATUS["free_btc"] = round(free_btc, 6)
 
             # طباعة لوحة المراقبة اللحظية
             logger.info("-" * 65)
