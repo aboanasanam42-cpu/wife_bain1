@@ -40,23 +40,29 @@ API_KEY = (os.environ.get("BINANCE_API_KEY") or os.environ.get("BINANCE_KEY") or
 API_SECRET = (os.environ.get("BINANCE_API_SECRET") or os.environ.get("BINANCE_SECRET") or "").strip()
 
 SYMBOL = os.environ.get("SYMBOL", "BTC/USDT").strip()
-TARGET_ORDER_USD = float(os.environ.get("TARGET_ORDER_USD", "5.5"))  # القيمة المستهدفة
-MAX_POSITIONS = int(os.environ.get("MAX_POSITIONS", "2"))            # الحد الأقصى للصفقات المتزامنة
-TAKE_PROFIT_PCT = float(os.environ.get("TAKE_PROFIT_PCT", "2.0"))    # هدف جني الأرباح المباشر السريع +2.0%
-STOP_LOSS_PCT = float(os.environ.get("STOP_LOSS_PCT", "1.0"))        # نسبة وقف الخسارة الصارم -1.0%
-LOOP_INTERVAL_SEC = int(os.environ.get("LOOP_INTERVAL_SEC", "10"))   # وقت الانتظار بين الدورات بالثواني
-BUY_COOLDOWN_SEC = int(os.environ.get("BUY_COOLDOWN_SEC", "180"))    # فاصل زمني بين عمليات الشراء لمنع التكرار اللحظي
+TARGET_ORDER_USD = float(os.environ.get("TARGET_ORDER_USD", "10.0").strip())  # القيمة المستهدفة بالدولار
+LIVE_TRADING = os.environ.get("LIVE_TRADING", "true").strip().lower() in ("true", "1", "yes")
+MAX_POSITIONS = int(os.environ.get("MAX_POSITIONS", "1").strip())            # الحد الأقصى للصفقات المتزامنة
+LOOP_INTERVAL_SEC = int(os.environ.get("LOOP_INTERVAL_SEC", "10").strip())   # وقت الانتظار بين الدورات بالثواني
+BUY_COOLDOWN_SEC = int(os.environ.get("BUY_COOLDOWN_SEC", "60").strip())     # فاصل زمني بين عمليات الشراء
 
-# إعدادات تتبع السعر اللحظي (Trailing Take Profit)
+# إعدادات الشراء عند الارتداد من القاع (Dip & Rebound)
+BUY_DIP_MIN_PCT = float(os.environ.get("BUY_DIP_MIN_PCT", "0.3").strip())
+BUY_REBOUND_CONFIRM_PCT = float(os.environ.get("BUY_REBOUND_CONFIRM_PCT", "0.1").strip())
+BUY_RSI_MAX = float(os.environ.get("BUY_RSI_MAX", "45").strip())
+
+# إعدادات تتبع السعر اللحظي (Trailing Take Profit & Stop Loss)
 TRAILING_STOP_ENABLED = os.environ.get("TRAILING_STOP_ENABLED", "true").strip().lower() in ("true", "1", "yes")
-TRAILING_ACTIVATION_PCT = float(os.environ.get("TRAILING_ACTIVATION_PCT", "1.0"))  # تفعيل التتبع عند ربح +1.0%
-TRAILING_CALLBACK_PCT = float(os.environ.get("TRAILING_CALLBACK_PCT", "0.35"))     # إغلاق الصفقة عند هبوط 0.35% من القمة
+TRAILING_ACTIVATION_PCT = float(os.environ.get("TRAILING_ACTIVATION_PCT", "0.4").strip())  # تفعيل التتبع عند ربح +0.4%
+TRAILING_CALLBACK_PCT = float(os.environ.get("TRAILING_CALLBACK_PCT", "0.15").strip())     # إغلاق الصفقة عند هبوط 0.15% من القمة
+STOP_LOSS_PCT = float(os.environ.get("STOP_LOSS_PCT", "0.8").strip())                      # نسبة وقف الخسارة الصارم -0.8%
+TAKE_PROFIT_PCT = float(os.environ.get("TAKE_PROFIT_PCT", "1.5").strip())                  # هدف جني الأرباح المباشر السريع +1.5%
 
-# معايير منع تجمد العملة واقتناص الحركة السريعة (Anti-Stagnation & Momentum)
-MAX_HOLD_TIME_SEC = int(os.environ.get("MAX_HOLD_TIME_SEC", "7200"))               # أقصى مدة بقاء للصفقة الراكدة (ساعتان)
-STAGNANT_EXIT_PCT = float(os.environ.get("STAGNANT_EXIT_PCT", "0.15"))             # نسبة الربح الأدنى إذا تجاوزت الصفقة وقت الركود
-MAX_SPREAD_PCT = float(os.environ.get("MAX_SPREAD_PCT", "0.15"))                   # أقصى فارق بين العرض والطلب لتجنب العملات المتجمدة
-MIN_VOLATILITY_PCT = float(os.environ.get("MIN_VOLATILITY_PCT", "0.15"))           # أدنى نسبة تقلب في آخر 15 دقيقة لضمان حركة حية
+# معايير منع تجمد العملة والسيولة (Zero-Freeze & Anti-Stagnation)
+MAX_HOLD_TIME_SEC = int(os.environ.get("MAX_HOLD_TIME_SEC", "900").strip())               # أقصى مدة بقاء للصفقة الراكدة (15 دقيقة)
+STAGNANT_EXIT_PCT = float(os.environ.get("STAGNANT_EXIT_PCT", "-0.2").strip())             # تسييل الصفقة لتحرير السيولة عند الركود
+MAX_SPREAD_PCT = float(os.environ.get("MAX_SPREAD_PCT", "0.05").strip())                   # أقصى فارق بين العرض والطلب (0.05%)
+MIN_VOLATILITY_PCT = float(os.environ.get("MIN_VOLATILITY_PCT", "0.15").strip())           # أدنى نسبة تقلب في آخر 15 دقيقة (0.15%)
 
 POSITIONS_FILE = "positions.json"
 
@@ -262,13 +268,17 @@ def main():
 
                 # أ) جني الأرباح المباشر السريع عند الصعود الناري (Hard TP)
                 if pnl_pct >= TAKE_PROFIT_PCT:
-                    logger.info(f"🎉 تحقق هدف جني الأرباح السريع (+{pnl_pct:.2f}% >= +{TAKE_PROFIT_PCT}%) للصفقة #{i}! تنفيذ البيع الفوري بالسوق...")
+                    logger.info(f"🎉 تحقق هدف جني الأرباح السريع (+{pnl_pct:.2f}% >= +{TAKE_PROFIT_PCT}%) للصفقة #{i}! تنفيذ البيع بالسوق...")
                     try:
                         sell_amount = float(exchange.amount_to_precision(SYMBOL, amount))
-                        sell_order = exchange.create_market_sell_order(SYMBOL, sell_amount)
-                        executed_price = float(sell_order.get('average', current_price))
+                        executed_price = current_price
+                        order_id = f"sim_hardtp_{int(now_ts)}"
+                        if LIVE_TRADING:
+                            sell_order = exchange.create_market_sell_order(SYMBOL, sell_amount)
+                            executed_price = float(sell_order.get('average', current_price))
+                            order_id = sell_order.get('id')
                         actual_pnl = ((executed_price - entry_price) / entry_price) * 100.0
-                        logger.info(f"✅ تم تنفيذ جني الأرباح بنجاح! رقم الطلب: {sell_order.get('id')} | سعر التنفيذ: ${executed_price:,.2f} | العائد المحقق: {actual_pnl:+.2f}%")
+                        logger.info(f"✅ تم تنفيذ جني الأرباح بنجاح! رقم الطلب: {order_id} | سعر التنفيذ: ${executed_price:,.2f} | العائد المحقق: {actual_pnl:+.2f}%")
                         continue
                     except Exception as err:
                         logger.error(f"❌ فشل تنفيذ أمر جني الأرباح: {err}")
@@ -276,12 +286,16 @@ def main():
                         continue
 
                 # ب) جني الأرباح عبر التتبع اللحظي (Trailing Take Profit)
-                elif trailing_active and drop_from_peak_pct >= TRAILING_CALLBACK_PCT and pnl_pct >= 0.25:
+                elif trailing_active and drop_from_peak_pct >= TRAILING_CALLBACK_PCT and pnl_pct >= 0.1:
                     logger.info(f"📈 ارتداد السعر بمقدار {drop_from_peak_pct:.2f}% من أعلى قمة (${highest_price:,.2f}) للصفقة #{i}! جارٍ حجز الأرباح اللحظية فوراً بالبيع...")
                     try:
                         sell_amount = float(exchange.amount_to_precision(SYMBOL, amount))
-                        sell_order = exchange.create_market_sell_order(SYMBOL, sell_amount)
-                        executed_price = float(sell_order.get('average', current_price))
+                        executed_price = current_price
+                        order_id = f"sim_tp_{int(now_ts)}"
+                        if LIVE_TRADING:
+                            sell_order = exchange.create_market_sell_order(SYMBOL, sell_amount)
+                            executed_price = float(sell_order.get('average', current_price))
+                            order_id = sell_order.get('id')
                         actual_pnl = ((executed_price - entry_price) / entry_price) * 100.0
                         logger.info(f"🏆 تم تنفيذ أمر حجز الأرباح (Trailing Exit) بنجاح! القمة: ${highest_price:,.2f} | البيع: ${executed_price:,.2f} | الربح الصافي: {actual_pnl:+.2f}%")
                         continue
@@ -295,10 +309,14 @@ def main():
                     logger.warning(f"⚠️ هبوط السعر إلى حد وقف الخسارة ({pnl_pct:.2f}% <= -{STOP_LOSS_PCT}%) للصفقة #{i}! جارٍ إيقاف النزيف بالبيع الفوري...")
                     try:
                         sell_amount = float(exchange.amount_to_precision(SYMBOL, amount))
-                        sell_order = exchange.create_market_sell_order(SYMBOL, sell_amount)
-                        executed_price = float(sell_order.get('average', current_price))
+                        executed_price = current_price
+                        order_id = f"sim_sl_{int(now_ts)}"
+                        if LIVE_TRADING:
+                            sell_order = exchange.create_market_sell_order(SYMBOL, sell_amount)
+                            executed_price = float(sell_order.get('average', current_price))
+                            order_id = sell_order.get('id')
                         actual_loss = ((executed_price - entry_price) / entry_price) * 100.0
-                        logger.info(f"🛑 تم تنفيذ أمر وقف الخسارة بنجاح. رقم الطلب: {sell_order.get('id')} | سعر التنفيذ: ${executed_price:,.2f} | نسبة الخسارة: {actual_loss:.2f}%")
+                        logger.info(f"🛑 تم تنفيذ أمر وقف الخسارة بنجاح. رقم الطلب: {order_id} | سعر التنفيذ: ${executed_price:,.2f} | نسبة الخسارة: {actual_loss:.2f}%")
                         continue
                     except Exception as err:
                         logger.error(f"❌ فشل تنفيذ أمر وقف الخسارة: {err}")
@@ -306,12 +324,16 @@ def main():
                         continue
 
                 # د) معيار عدم تجمد العملة (Anti-Stagnation Release)
-                elif MAX_HOLD_TIME_SEC > 0 and hold_duration_sec >= MAX_HOLD_TIME_SEC and pnl_pct <= STAGNANT_EXIT_PCT:
-                    logger.warning(f"⏳ معيار منع تجمد العملة: مضى {hold_mins} دقيقة والصفقة متجمدة (عائد {pnl_pct:+.2f}% <= +{STAGNANT_EXIT_PCT}%). جارٍ تسييل الصفقة لتحرير رأس المال...")
+                elif MAX_HOLD_TIME_SEC > 0 and hold_duration_sec >= MAX_HOLD_TIME_SEC and (pnl_pct <= STAGNANT_EXIT_PCT or pnl_pct < TRAILING_ACTIVATION_PCT):
+                    logger.warning(f"⏳ معيار منع تجمد العملة: مضى {hold_mins} دقيقة والصفقة متجمدة (عائد {pnl_pct:+.2f}% ضمن نطاق الركود). جارٍ تسييل الصفقة لتحرير رأس المال...")
                     try:
                         sell_amount = float(exchange.amount_to_precision(SYMBOL, amount))
-                        sell_order = exchange.create_market_sell_order(SYMBOL, sell_amount)
-                        executed_price = float(sell_order.get('average', current_price))
+                        executed_price = current_price
+                        order_id = f"sim_antifreeze_{int(now_ts)}"
+                        if LIVE_TRADING:
+                            sell_order = exchange.create_market_sell_order(SYMBOL, sell_amount)
+                            executed_price = float(sell_order.get('average', current_price))
+                            order_id = sell_order.get('id')
                         actual_pnl = ((executed_price - entry_price) / entry_price) * 100.0
                         logger.info(f"🔓 تم تسييل الصفقة المتجمدة بنجاح لتحرير السيولة! سعر التنفيذ: ${executed_price:,.2f} | النتيجة: {actual_pnl:+.2f}%")
                         continue
@@ -332,47 +354,58 @@ def main():
                 save_positions(positions)
 
             # ==========================================
-            # 4. فحص شروط فتح صفقة جديدة (Buy Logic مع معايير عدم التجمد والزخم)
+            # 4. فحص شروط فتح صفقة جديدة (Dip & Rebound Strategy)
             # ==========================================
             if len(positions) < MAX_POSITIONS:
-                effective_order_cost = max(TARGET_ORDER_USD, min_notional + 0.15)
+                effective_order_cost = max(TARGET_ORDER_USD, min_notional + 0.20)
                 time_since_last_buy = now_ts - last_buy_timestamp
                 is_cooldown_passed = time_since_last_buy >= BUY_COOLDOWN_SEC
 
                 if not is_cooldown_passed:
                     remaining_cooldown = int(BUY_COOLDOWN_SEC - time_since_last_buy)
                     logger.info(f"⏳ فترة التهدئة بين الصفقات نشطة (متبقي {remaining_cooldown} ثانية قبل السماح بشراء جديد).")
-                elif free_usdt < effective_order_cost:
+                elif free_usdt < effective_order_cost and LIVE_TRADING:
                     logger.info(f"ℹ️ رصيد USDT غير كافٍ لفتح صفقة جديدة (المطلوب: {effective_order_cost:.2f} USDT | المتاح: {free_usdt:.2f} USDT).")
                 elif spread_pct > MAX_SPREAD_PCT:
                     logger.info(f"🛡️ حماية من التجمد: السبريد مرتفع ({spread_pct:.3f}% > {MAX_SPREAD_PCT:.3f}%). تجنب الدخول لضعف السيولة اللحظية.")
                 else:
-                    # فحص الزخم والتقلب السريع
+                    # فحص الهبوط النسبي والارتداد التأكيدي من القاع
                     try:
-                        ohlcv = exchange.fetch_ohlcv(SYMBOL, timeframe='1m', limit=15)
-                        if ohlcv and len(ohlcv) >= 5:
+                        ohlcv = exchange.fetch_ohlcv(SYMBOL, timeframe='1m', limit=20)
+                        if ohlcv and len(ohlcv) >= 10:
                             highs = [c[2] for c in ohlcv]
                             lows = [c[3] for c in ohlcv]
                             closes = [c[4] for c in ohlcv]
+
                             min_l = min(lows)
                             max_h = max(highs)
                             volatility_15m = ((max_h - min_l) / min_l) * 100.0 if min_l > 0 else 0.0
-                            sma_5 = sum(closes[-5:]) / 5.0
                             current_rsi = calculate_rsi(closes, period=14)
 
-                            logger.info(f"📊 التحليل اللحظي: تقلب 15د: {volatility_15m:.2f}% | SMA-5: ${sma_5:,.2f} | RSI: {current_rsi:.1f}")
+                            recent_high = max(highs[-15:])
+                            recent_low = min(lows[-15:])
+                            dip_pct = ((recent_high - recent_low) / recent_high) * 100.0 if recent_high > 0 else 0.0
+                            rebound_pct = ((current_price - recent_low) / recent_low) * 100.0 if recent_low > 0 else 0.0
 
-                            # معيار عدم التجمد: يجب أن يكون نطاق الحركة كافياً
-                            is_active_enough = volatility_15m >= MIN_VOLATILITY_PCT
-                            # معيار الحركة اللحظية المربحة: السعر متماسك أو صاعد فوق متوسط الشموع السريعة ولا يتشبع شراءً مفرطاً
-                            is_momentum_good = (current_price >= sma_5 * 0.9992) and (current_rsi <= 65.0)
+                            logger.info(f"📊 التحليل اللحظي: تقلب 15د: {volatility_15m:.2f}% | هبوط: {dip_pct:.2f}% | ارتداد: +{rebound_pct:.2f}% | RSI: {current_rsi:.1f}")
 
-                            if not is_active_enough:
+                            volatility_ok = (volatility_15m >= MIN_VOLATILITY_PCT)
+                            dip_ok = (dip_pct >= BUY_DIP_MIN_PCT) or (BUY_DIP_MIN_PCT <= 0)
+                            rebound_ok = (rebound_pct >= BUY_REBOUND_CONFIRM_PCT) or (BUY_REBOUND_CONFIRM_PCT <= 0)
+                            rsi_ok = (current_rsi <= BUY_RSI_MAX)
+                            not_at_peak = (current_price <= recent_high)
+
+                            if not volatility_ok:
                                 logger.info(f"😴 السوق هادئ/متجمد حالياً ({volatility_15m:.2f}% < {MIN_VOLATILITY_PCT}%). في انتظار حركة نشطة.")
-                            elif not is_momentum_good:
-                                logger.info("⏳ الزخم اللحظي غير مواتٍ حالياً (السعر أسفل المتوسط اللحظي أو في قمة متضخمة). في انتظار إشارة صاعدة.")
+                            elif not dip_ok:
+                                logger.info(f"⏳ لم يتحقق شرط الهبوط النسبي ({dip_pct:.2f}% < {BUY_DIP_MIN_PCT}%).")
+                            elif not rebound_ok:
+                                logger.info(f"⏳ في انتظار تأكيد الارتداد من القاع ({rebound_pct:.2f}% < {BUY_REBOUND_CONFIRM_PCT}%).")
+                            elif not rsi_ok:
+                                logger.info(f"⏳ مؤشر RSI مرتفع نسبياً ({current_rsi:.1f} > {BUY_RSI_MAX}). تجنب الشراء عند قمم التشبع.")
+                            elif not not_at_peak:
+                                logger.info("⏳ السعر عند قمة الشموع الأخيرة، في انتظار تشكل قاع جديد.")
                             else:
-                                # حساب كمية البيتكوين المطلوبة
                                 raw_amount = effective_order_cost / ask_price
                                 amount_str = exchange.amount_to_precision(SYMBOL, raw_amount)
                                 buy_amount = float(amount_str)
@@ -384,17 +417,25 @@ def main():
                                     buy_amount += min_qty_step
                                     buy_amount = float(exchange.amount_to_precision(SYMBOL, buy_amount))
 
-                                logger.info(f"🚀 الزخم والحركة السريعة مؤكدة! تنفيذ شراء فوري: {buy_amount:.6f} BTC (~${effective_order_cost:.2f} USDT)...")
+                                order_mode = "حقيقي (Live)" if LIVE_TRADING else "محاكاة (Simulation)"
+                                logger.info(f"🚀 تأكيد الارتداد اللحظي! تنفيذ شراء {order_mode}: {buy_amount:.6f} BTC (~${effective_order_cost:.2f} USDT)...")
 
-                                buy_order = exchange.create_market_buy_order(SYMBOL, buy_amount)
-                                filled_price = float(buy_order.get('average', ask_price))
-                                filled_qty = float(buy_order.get('filled', buy_amount))
+                                filled_price = ask_price
+                                filled_qty = buy_amount
                                 total_cost = filled_price * filled_qty
+                                order_id = f"sim_buy_{int(now_ts)}"
 
-                                logger.info(f"✅ تم تنفيذ الشراء الفوري بنجاح! رقم الطلب: {buy_order.get('id')} | سعر الدخول: ${filled_price:,.2f} | التكلفة: {total_cost:.2f} USDT")
+                                if LIVE_TRADING:
+                                    buy_order = exchange.create_market_buy_order(SYMBOL, buy_amount)
+                                    filled_price = float(buy_order.get('average', ask_price))
+                                    filled_qty = float(buy_order.get('filled', buy_amount))
+                                    total_cost = filled_price * filled_qty
+                                    order_id = buy_order.get('id')
+
+                                logger.info(f"✅ تم تنفيذ الشراء بنجاح! رقم الطلب: {order_id} | سعر الدخول: ${filled_price:,.2f} | التكلفة: {total_cost:.2f} USDT")
 
                                 new_position = {
-                                    "id": buy_order.get('id'),
+                                    "id": order_id,
                                     "symbol": SYMBOL,
                                     "amount": filled_qty,
                                     "entry_price": filled_price,
@@ -402,7 +443,8 @@ def main():
                                     "cost": total_cost,
                                     "timestamp": datetime.utcnow().isoformat(),
                                     "created_at_ts": now_ts,
-                                    "trailing_active": False
+                                    "trailing_active": False,
+                                    "side": "buy"
                                 }
                                 positions.append(new_position)
                                 save_positions(positions)
@@ -410,7 +452,7 @@ def main():
                     except Exception as buy_err:
                         logger.error(f"❌ خطأ أثناء تقييم أو تنفيذ أمر الشراء: {buy_err}")
             else:
-                logger.info(f"🔒 تم بلوغ الحد الأقصى للصفقات المتزامنة ({MAX_POSITIONS}/{MAX_POSITIONS}). في انتظار جني الأرباح أو وقف الخسارة.")
+                logger.info(f"🔒 تم بلوغ الحد الأقصى للصفقات المتزامنة ({MAX_POSITIONS}/{MAX_POSITIONS}). في انتظار جني الأرباح أو تسييل عدم التجمد.")
 
         except ccxt.RateLimitExceeded as rle:
             logger.warning(f"⚠️ تم تجاوز معدل طلبات بينانس (Rate Limit Exceeded): {rle}. سيتم التوقف مؤقتاً لمدة 60 ثانية لحماية الحساب...")
