@@ -1,3 +1,6 @@
+import urllib.request
+ip = urllib.request.urlopen('https://api.ipify.org').read().decode()
+print(f"MY_CURRENT_IP: {ip}")
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
