@@ -122,7 +122,7 @@ def save_positions(positions):
 def init_exchange():
     """إنشاء اتصال مع Binance Spot مع خيارات الأمان والحدود الزمنية"""
     check_api_keys()
-    exchange = ccxt.binance({
+    config = {
         'apiKey': API_KEY,
         'secret': API_SECRET,
         'enableRateLimit': True,
@@ -130,7 +130,13 @@ def init_exchange():
             'defaultType': 'spot',          # تفعيل السوق الفوري حصراً
             'adjustForTimeDifference': True  # مزامنة التوقيت مع خوادم بينانس تلقائياً
         }
-    })
+    }
+    proxy = (os.environ.get("BINANCE_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or "").strip()
+    if proxy:
+        config['httpsProxy'] = proxy
+        config['proxies'] = {'http': proxy, 'https': proxy}
+        logger.info(f"🌐 تم تفعيل البروكسي لاتصال بينانس: {proxy[:15]}...")
+    exchange = ccxt.binance(config)
     return exchange
 
 

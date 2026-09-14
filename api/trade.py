@@ -150,12 +150,18 @@ def execute_trade_cycle():
     max_hold_time_sec = max(0, int(os.environ.get("MAX_HOLD_TIME_SEC", "1200")))
     stagnant_exit_pct = float(os.environ.get("STAGNANT_EXIT_PCT", "0.00"))
 
-    exchange = ccxt.binance({
+    exchange_config = {
         "apiKey": api_key,
         "secret": api_secret,
         "enableRateLimit": True,
         "options": {"defaultType": "spot", "adjustForTimeDifference": True}
-    })
+    }
+    proxy = (os.environ.get("BINANCE_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or "").strip()
+    if proxy:
+        exchange_config["httpsProxy"] = proxy
+        exchange_config["proxies"] = {"http": proxy, "https": proxy}
+
+    exchange = ccxt.binance(exchange_config)
     markets = exchange.load_markets()
     if symbol not in markets:
         raise ValueError(f"{symbol} is not available on Binance Spot")
@@ -330,8 +336,15 @@ class handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         except Exception as exc:
+            err_msg = str(exc)
+            if "restricted location" in err_msg.lower() or "451" in err_msg:
+                err_msg = (
+                    f"{err_msg} | [DIAGNOSIS]: Binance blocks requests from US server locations (HTTP 451). "
+                    "Solution: Deploy in Europe/Asia (e.g., set 'regions': ['fra1'] in vercel.json, "
+                    "or set Service Region to 'europe-west4' on Railway, or set BINANCE_PROXY environment variable)."
+                )
             body = json.dumps({
-                "status": "error", "error_type": type(exc).__name__, "message": str(exc),
+                "status": "error", "error_type": type(exc).__name__, "message": err_msg,
                 "timestamp": datetime.utcnow().isoformat() + "Z"
             }, ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(500)
