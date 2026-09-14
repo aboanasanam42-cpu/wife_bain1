@@ -461,6 +461,17 @@ def main():
         except ccxt.InsufficientFunds as ife:
             logger.error(f"❌ رصيد غير كافٍ لتنفيذ المعاملة: {ife}. سيتم الاستمرار في فحص الصفقات القائمة.")
             time.sleep(20)
+        except ccxt.ExchangeNotAvailable as ena:
+            err_str = str(ena)
+            if "restricted location" in err_str.lower() or "451" in err_str:
+                logger.error(
+                    "⛔ حظر موقع بينانس (HTTP 451): سيرفر Railway يعمل في منطقة محظورة (كالولايات المتحدة). "
+                    "الحل الفوري: توجه إلى Railway -> Settings -> Service Region وغير المنطقة إلى 'europe-west4' (Amsterdam) أو 'asia-southeast1'. "
+                    f"الرسالة: {ena}"
+                )
+            else:
+                logger.error(f"❌ خدمة بينانس غير متاحة مؤقتاً: {ena}")
+            time.sleep(30)
         except ccxt.ExchangeError as ee:
             logger.error(f"❌ خطأ مسترجع من خادم Binance Spot: {ee}")
             time.sleep(10)
