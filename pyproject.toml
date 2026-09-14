@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "Binance Spot trading bot with a Vercel serverless handler"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "ccxt",
-    "python-dotenv",
+  "ccxt",
+  "python-dotenv",
 ]
 
 [tool.vercel]

@@ -1,1468 +1,474 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-Binance Spot Cloud Trading Bot
-BTC/USDT by default.
-
-IMPORTANT:
-LIVE_TRADING=false by default.
-Never place real orders unless LIVE_TRADING=true is explicitly configured.
+Binance Spot 24/7 Cloud Trading Bot (BTC/USDT)
+Optimized for 24/7 continuous worker deployment on Railway, Docker, or VPS.
 """
 
-import json
-import logging
 import os
 import sys
 import time
+import json
+import logging
 import urllib.request
-from datetime import datetime, timezone
-
+from datetime import datetime
 import ccxt
 from dotenv import load_dotenv
 
+# Print current public IP safely (useful for Binance API IP whitelisting on Railway/VPS)
+try:
+    _ip_req = urllib.request.Request("https://api.ipify.org", headers={"User-Agent": "Mozilla/5.0"})
+    current_public_ip = urllib.request.urlopen(_ip_req, timeout=5).read().decode().strip()
+    print(f"MY_CURRENT_IP: {current_public_ip}")
+except Exception as _ip_err:
+    print(f"Notice: Could not fetch public IP ({_ip_err})")
 
-# ============================================================
-# 1. Environment
-# ============================================================
-
+# تحميل متغيرات البيئة من ملف .env في حال وجوده محلياً
 load_dotenv()
 
-
-def sanitize_key(value: str | None) -> str:
-    """Clean API keys copied into environment variables."""
-    if not value:
-        return ""
-
-    cleaned = value.strip()
-
-    if (
-        len(cleaned) >= 2
-        and cleaned[0] == cleaned[-1]
-        and cleaned[0] in {"'", '"'}
-    ):
-        cleaned = cleaned[1:-1].strip()
-
-    return "".join(
-        char for char in cleaned
-        if char.isprintable() and not char.isspace()
-    )
-
-
-def env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-
-    if value is None:
-        return default
-
-    return value.strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
-def env_float(name: str, default: float) -> float:
-    value = os.getenv(name, str(default)).strip()
-
-    try:
-        return float(value)
-    except ValueError:
-        logging.getLogger("BinanceSpotBot").warning(
-            "Invalid value for %s=%r. Using default %s.",
-            name,
-            value,
-            default,
-        )
-        return float(default)
-
-
-def env_int(name: str, default: int) -> int:
-    value = os.getenv(name, str(default)).strip()
-
-    try:
-        return int(value)
-    except ValueError:
-        logging.getLogger("BinanceSpotBot").warning(
-            "Invalid value for %s=%r. Using default %s.",
-            name,
-            value,
-            default,
-        )
-        return int(default)
-
-
-API_KEY = sanitize_key(
-    os.getenv("BINANCE_API_KEY")
-    or os.getenv("BINANCE_KEY")
-)
-
-API_SECRET = sanitize_key(
-    os.getenv("BINANCE_API_SECRET")
-    or os.getenv("BINANCE_SECRET")
-)
-
-SYMBOL = os.getenv("SYMBOL", "BTC/USDT").strip()
-
-TARGET_ORDER_USD = max(
-    0.0,
-    env_float("TARGET_ORDER_USD", 5.5),
-)
-
-LIVE_TRADING = env_bool("LIVE_TRADING", False)
-
-MAX_POSITIONS = max(
-    1,
-    env_int("MAX_POSITIONS", 1),
-)
-
-LOOP_INTERVAL_SEC = max(
-    3,
-    env_int("LOOP_INTERVAL_SEC", 10),
-)
-
-BUY_COOLDOWN_SEC = max(
-    0,
-    env_int("BUY_COOLDOWN_SEC", 30),
-)
-
-BUY_DIP_MIN_PCT = max(
-    0.0,
-    env_float("BUY_DIP_MIN_PCT", 0.25),
-)
-
-BUY_REBOUND_CONFIRM_PCT = max(
-    0.0,
-    env_float("BUY_REBOUND_CONFIRM_PCT", 0.08),
-)
-
-BUY_RSI_MAX = min(
-    100.0,
-    max(0.0, env_float("BUY_RSI_MAX", 48.0)),
-)
-
-MIN_VOLATILITY_PCT = max(
-    0.0,
-    env_float("MIN_VOLATILITY_PCT", 0.20),
-)
-
-MAX_SPREAD_PCT = max(
-    0.0,
-    env_float("MAX_SPREAD_PCT", 0.15),
-)
-
-TRAILING_STOP_ENABLED = env_bool(
-    "TRAILING_STOP_ENABLED",
-    True,
-)
-
-TRAILING_ACTIVATION_PCT = max(
-    0.0,
-    env_float("TRAILING_ACTIVATION_PCT", 0.15),
-)
-
-TRAILING_CALLBACK_PCT = max(
-    0.0,
-    env_float("TRAILING_CALLBACK_PCT", 0.20),
-)
-
-STOP_LOSS_PCT = max(
-    0.01,
-    env_float("STOP_LOSS_PCT", 0.40),
-)
-
-MAX_HOLD_TIME_SEC = max(
-    0,
-    env_int("MAX_HOLD_TIME_SEC", 1200),
-)
-
-STAGNANT_EXIT_PCT = env_float(
-    "STAGNANT_EXIT_PCT",
-    0.0,
-)
-
-POSITIONS_FILE = os.getenv(
-    "POSITIONS_FILE",
-    "positions.json",
-)
-
-
-# ============================================================
-# 2. Logging
-# ============================================================
-
+# ==========================================
+# 1. إعدادات السجل والطباعة (Logging Setup)
+# ==========================================
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout),
-    ],
+        logging.StreamHandler(sys.stdout)
+    ]
 )
-
 logger = logging.getLogger("BinanceSpotBot")
 
+# ==========================================
+# 2. قراءة المتغيرات البيئية والإعدادات
+# ==========================================
+def sanitize_key(key):
+    if not key:
+        return ""
+    cleaned = key.strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in "\"'":
+        cleaned = cleaned[1:-1].strip()
+    return "".join(c for c in cleaned if c.isprintable() and not c.isspace())
 
-# ============================================================
-# 3. Public IP
-# ============================================================
+API_KEY = sanitize_key(os.environ.get("BINANCE_API_KEY") or os.environ.get("BINANCE_KEY") or "")
+API_SECRET = sanitize_key(os.environ.get("BINANCE_API_SECRET") or os.environ.get("BINANCE_SECRET") or "")
 
-def print_public_ip() -> None:
-    """
-    Display the current public IP.
-    Useful when Binance API restrictions use IP whitelisting.
-    """
-    try:
-        request = urllib.request.Request(
-            "https://api.ipify.org",
-            headers={
-                "User-Agent": "BinanceSpotBot/1.0",
-            },
-        )
+SYMBOL = os.environ.get("SYMBOL", "BTC/USDT").strip()
+TARGET_ORDER_USD = float(os.environ.get("TARGET_ORDER_USD", "5.5").strip())
+LIVE_TRADING = os.environ.get("LIVE_TRADING", "false").strip().lower() in ("true", "1", "yes")
+MAX_POSITIONS = max(1, int(os.environ.get("MAX_POSITIONS", "1").strip()))
+LOOP_INTERVAL_SEC = max(3, int(os.environ.get("LOOP_INTERVAL_SEC", "10").strip()))
+BUY_COOLDOWN_SEC = max(0, int(os.environ.get("BUY_COOLDOWN_SEC", "30").strip()))
 
-        with urllib.request.urlopen(
-            request,
-            timeout=5,
-        ) as response:
-            public_ip = response.read().decode(
-                "utf-8",
-                errors="replace",
-            ).strip()
+# إعدادات الشراء عند الارتداد من القاع (Dip & Rebound)
+BUY_DIP_MIN_PCT = max(0.0, float(os.environ.get("BUY_DIP_MIN_PCT", "0.25").strip()))
+BUY_REBOUND_CONFIRM_PCT = max(0.0, float(os.environ.get("BUY_REBOUND_CONFIRM_PCT", "0.08").strip()))
+BUY_RSI_MAX = float(os.environ.get("BUY_RSI_MAX", "48").strip())
+MIN_VOLATILITY_PCT = max(0.0, float(os.environ.get("MIN_VOLATILITY_PCT", "0.20").strip()))
+MAX_SPREAD_PCT = max(0.0, float(os.environ.get("MAX_SPREAD_PCT", "0.15").strip()))
 
-        if public_ip:
-            logger.info("MY_CURRENT_IP: %s", public_ip)
+# إعدادات تتبع السعر اللحظي (Trailing High-Water Take Profit & Emergency Stop)
+TRAILING_STOP_ENABLED = os.environ.get("TRAILING_STOP_ENABLED", "true").strip().lower() in ("true", "1", "yes")
+TRAILING_ACTIVATION_PCT = max(0.0, float(os.environ.get("TRAILING_ACTIVATION_PCT", "0.15").strip()))
+TRAILING_CALLBACK_PCT = max(0.0, float(os.environ.get("TRAILING_CALLBACK_PCT", "0.20").strip()))
+STOP_LOSS_PCT = max(0.01, float(os.environ.get("STOP_LOSS_PCT", "0.40").strip()))
 
-    except Exception as error:
-        logger.warning(
-            "Could not fetch public IP: %s",
-            error,
-        )
+# معايير منع تجمد العملة والسيولة (Anti-Stagnation / Capital Release)
+MAX_HOLD_TIME_SEC = max(0, int(os.environ.get("MAX_HOLD_TIME_SEC", "1200").strip()))
+STAGNANT_EXIT_PCT = float(os.environ.get("STAGNANT_EXIT_PCT", "0.00").strip())
+
+POSITIONS_FILE = "positions.json"
 
 
-# ============================================================
-# 4. API validation
-# ============================================================
-
-def check_api_keys() -> None:
-    """Validate required Binance API credentials."""
+def check_api_keys():
+    """التحقق الإجباري من وجود مفاتيح API في متغيرات البيئة"""
     if not API_KEY or not API_SECRET:
-        logger.error("=" * 70)
-        logger.error(
-            "BINANCE API credentials are missing."
-        )
-        logger.error(
-            "Required environment variables:"
-        )
-        logger.error(
-            "BINANCE_API_KEY or BINANCE_KEY"
-        )
-        logger.error(
-            "BINANCE_API_SECRET or BINANCE_SECRET"
-        )
-        logger.error("=" * 70)
-
-        raise RuntimeError(
-            "Missing Binance API credentials."
-        )
+        logger.error("=" * 65)
+        logger.error("خطأ أمني فادح: مفاتيح Binance API غير موجودة في متغيرات البيئة!")
+        logger.error("يرجى ضبط المتغيرات التالية في منصة الاستضافة أو مستودع GitHub:")
+        logger.error("  - BINANCE_API_KEY (أو BINANCE_KEY)")
+        logger.error("  - BINANCE_API_SECRET (أو BINANCE_SECRET)")
+        logger.error("=" * 65)
+        sys.exit(1)
 
 
-# ============================================================
-# 5. Position persistence
-# ============================================================
-
-def load_positions() -> list[dict]:
-    """Load locally persisted positions."""
-    if not os.path.exists(POSITIONS_FILE):
-        return []
-
-    try:
-        with open(
-            POSITIONS_FILE,
-            "r",
-            encoding="utf-8",
-        ) as file:
-            data = json.load(file)
-
-        if not isinstance(data, list):
-            logger.warning(
-                "%s does not contain a position list.",
-                POSITIONS_FILE,
-            )
-            return []
-
-        valid_positions = []
-
-        for position in data:
-            if not isinstance(position, dict):
-                continue
-
-            try:
-                float(position["entry_price"])
-                float(position["amount"])
-            except (KeyError, TypeError, ValueError):
-                logger.warning(
-                    "Ignoring invalid saved position: %r",
-                    position,
-                )
-                continue
-
-            valid_positions.append(position)
-
-        return valid_positions
-
-    except (OSError, json.JSONDecodeError) as error:
-        logger.warning(
-            "Could not read %s: %s",
-            POSITIONS_FILE,
-            error,
-        )
-
-        return []
-
-
-def save_positions(positions: list[dict]) -> None:
-    """Atomically save positions to disk."""
-    temporary_file = f"{POSITIONS_FILE}.tmp"
-
-    try:
-        with open(
-            temporary_file,
-            "w",
-            encoding="utf-8",
-        ) as file:
-            json.dump(
-                positions,
-                file,
-                indent=2,
-                ensure_ascii=False,
-            )
-
-        os.replace(
-            temporary_file,
-            POSITIONS_FILE,
-        )
-
-    except OSError as error:
-        logger.error(
-            "Could not save positions: %s",
-            error,
-        )
-
+# ==========================================
+# 3. إدارة حالة الصفقات في ملف مؤقت/الذاكرة
+# ==========================================
+def load_positions():
+    """تحميل الصفقات المفتوحة من الملف لضمان عدم فقدانها عند إعادة تشغيل البوت سحابياً"""
+    if os.path.exists(POSITIONS_FILE):
         try:
-            if os.path.exists(temporary_file):
-                os.remove(temporary_file)
-        except OSError:
-            pass
+            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except Exception as e:
+            logger.warning(f"تعذر قراءة ملف الصفقات {POSITIONS_FILE}: {e}. سيتم البدء بقائمة فارغة.")
+    return []
 
 
-# ============================================================
-# 6. Binance connection
-# ============================================================
+def save_positions(positions):
+    """حفظ الصفقات المفتوحة في الملف المحلي"""
+    try:
+        with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(positions, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"خطأ أثناء حفظ الصفقات في الملف: {e}")
 
-def init_exchange() -> ccxt.binance:
-    """Create authenticated Binance Spot exchange."""
+
+# ==========================================
+# 4. تهيئة منصة بينانس عبر CCXT
+# ==========================================
+def init_exchange():
+    """إنشاء اتصال مع Binance Spot مع خيارات الأمان والحدود الزمنية"""
     check_api_keys()
-
-    exchange = ccxt.binance(
-        {
-            "apiKey": API_KEY,
-            "secret": API_SECRET,
-            "enableRateLimit": True,
-            "timeout": 20000,
-            "options": {
-                "defaultType": "spot",
-                "adjustForTimeDifference": True,
-            },
+    exchange = ccxt.binance({
+        'apiKey': API_KEY,
+        'secret': API_SECRET,
+        'enableRateLimit': True,
+        'options': {
+            'defaultType': 'spot',          # تفعيل السوق الفوري حصراً
+            'adjustForTimeDifference': True  # مزامنة التوقيت مع خوادم بينانس تلقائياً
         }
-    )
-
+    })
     return exchange
 
 
-# ============================================================
-# 7. Market helpers
-# ============================================================
-
-def get_min_notional(market: dict) -> float:
+def get_min_notional(market):
     """
-    Determine the minimum order cost accepted by Binance.
+    استخراج الحد الأدنى لقيمة الصفقة (min_notional) من بيانات السوق بدقة
+    في منصة بينانس الفوري الحد الأدنى المعتاد هو 5 USDT
     """
-    default_minimum = 5.0
-
+    min_cost = 5.0  # القيمة الافتراضية الآمنة لـ Binance Spot
     try:
-        limits = market.get("limits", {})
-        cost_limits = limits.get("cost", {})
+        # فحص cost min من limits الموحدة في CCXT
+        if 'limits' in market and 'cost' in market['limits'] and market['limits']['cost']['min'] is not None:
+            min_cost = float(market['limits']['cost']['min'])
+        else:
+            # فحص فلاتر بينانس الخام (raw filters)
+            filters = market.get('info', {}).get('filters', [])
+            for f in filters:
+                filter_type = f.get('filterType')
+                if filter_type in ['NOTIONAL', 'MIN_NOTIONAL']:
+                    if 'minNotional' in f:
+                        min_cost = float(f['minNotional'])
+                    elif 'notional' in f:
+                        min_cost = float(f['notional'])
+                    break
+    except Exception as e:
+        logger.warning(f"تعذر استخراج minNotional تلقائياً، سيتم اعتماد 5.0 USDT: {e}")
 
-        cost_min = cost_limits.get("min")
-
-        if cost_min is not None:
-            return float(cost_min)
-
-        filters = market.get(
-            "info",
-            {},
-        ).get(
-            "filters",
-            [],
-        )
-
-        for item in filters:
-            filter_type = item.get("filterType")
-
-            if filter_type in {
-                "NOTIONAL",
-                "MIN_NOTIONAL",
-            }:
-                value = (
-                    item.get("minNotional")
-                    or item.get("notional")
-                )
-
-                if value is not None:
-                    return float(value)
-
-    except (
-        TypeError,
-        ValueError,
-        AttributeError,
-    ) as error:
-        logger.warning(
-            "Could not determine minNotional: %s",
-            error,
-        )
-
-    return default_minimum
+    return min_cost
 
 
-def get_amount_minimum(market: dict) -> float:
-    """Return the minimum order amount if available."""
-    try:
-        amount_min = (
-            market
-            .get("limits", {})
-            .get("amount", {})
-            .get("min")
-        )
-
-        if amount_min is not None:
-            return float(amount_min)
-
-    except (
-        TypeError,
-        ValueError,
-        AttributeError,
-    ):
-        pass
-
-    return 0.0
-
-
-# ============================================================
-# 8. RSI
-# ============================================================
-
-def calculate_rsi(
-    closes: list[float],
-    period: int = 14,
-) -> float:
-    """Calculate RSI using the latest period."""
+def calculate_rsi(closes, period=14):
+    """حساب مؤشر القوة النسبية RSI للمساعدة في تحديد ارتدادات الأسعار"""
     if len(closes) < period + 1:
-        return 50.0
-
+        return 50.0  # قيمة محايدة
+    
     gains = []
     losses = []
-
-    for index in range(1, len(closes)):
-        difference = (
-            closes[index]
-            - closes[index - 1]
-        )
-
-        if difference > 0:
-            gains.append(difference)
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        if diff >= 0:
+            gains.append(diff)
             losses.append(0.0)
-
         else:
             gains.append(0.0)
-            losses.append(abs(difference))
+            losses.append(abs(diff))
+    
+    if len(gains) < period:
+        return 50.0
 
-    recent_gains = gains[-period:]
-    recent_losses = losses[-period:]
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
 
-    average_gain = sum(recent_gains) / period
-    average_loss = sum(recent_losses) / period
-
-    if average_loss == 0:
-        if average_gain == 0:
-            return 50.0
-
+    if avg_loss == 0:
         return 100.0
-
-    relative_strength = (
-        average_gain / average_loss
-    )
-
-    return 100.0 - (
-        100.0 / (1.0 + relative_strength)
-    )
+    rs = avg_gain / avg_loss
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    return rsi
 
 
-# ============================================================
-# 9. Order helpers
-# ============================================================
-
-def execute_market_sell(
-    exchange: ccxt.binance,
-    amount: float,
-    reason: str,
-    current_price: float,
-    entry_price: float,
-) -> tuple[bool, float, str]:
-    """
-    Sell a position.
-    Returns:
-        success, execution_price, order_id
-    """
-    try:
-        sell_amount = float(
-            exchange.amount_to_precision(
-                SYMBOL,
-                amount,
-            )
-        )
-
-        if sell_amount <= 0:
-            raise ValueError(
-                "Calculated sell amount is zero."
-            )
-
-        if LIVE_TRADING:
-            order = exchange.create_market_sell_order(
-                SYMBOL,
-                sell_amount,
-            )
-
-            execution_price = float(
-                order.get("average")
-                or order.get("price")
-                or current_price
-            )
-
-            order_id = str(
-                order.get("id")
-                or "unknown"
-            )
-
-        else:
-            execution_price = current_price
-            order_id = (
-                f"sim_sell_"
-                f"{reason}_"
-                f"{int(time.time())}"
-            )
-
-        pnl_pct = (
-            (execution_price - entry_price)
-            / entry_price
-            * 100.0
-        )
-
-        logger.info(
-            "SELL %s | order=%s | price=%.8f | PnL=%+.3f%% | mode=%s",
-            reason,
-            order_id,
-            execution_price,
-            pnl_pct,
-            "LIVE" if LIVE_TRADING else "SIMULATION",
-        )
-
-        return (
-            True,
-            execution_price,
-            order_id,
-        )
-
-    except Exception as error:
-        logger.error(
-            "Sell failed (%s): %s",
-            reason,
-            error,
-            exc_info=True,
-        )
-
-        return (
-            False,
-            current_price,
-            "",
-        )
-
-
-# ============================================================
-# 10. Main trading loop
-# ============================================================
-
-def main() -> None:
-
-    logger.info("=" * 70)
-    logger.info(
-        "Starting Binance Spot Cloud Trading Bot"
-    )
-    logger.info(
-        "Symbol: %s",
-        SYMBOL,
-    )
-    logger.info(
-        "Trading mode: %s",
-        "LIVE" if LIVE_TRADING else "SIMULATION",
-    )
-    logger.info(
-        "Target order: %.2f USDT",
-        TARGET_ORDER_USD,
-    )
-    logger.info(
-        "Max positions: %d",
-        MAX_POSITIONS,
-    )
-    logger.info("=" * 70)
-
-    print_public_ip()
+# ==========================================
+# 5. الدورة الرئيسية للبوت (24/7 Cloud Loop)
+# ==========================================
+def main():
+    logger.info("=" * 65)
+    logger.info("بدء تشغيل بوت التداول الفوري السحابي (Binance Spot Bot)")
+    logger.info(f"الزوج المعتمد: {SYMBOL} (Spot حصراً) | التداول الحقيقي: {LIVE_TRADING}")
+    logger.info(f"أقصى عدد صفقات متزامنة: {MAX_POSITIONS} | قيمة الصفقة: {TARGET_ORDER_USD} USDT")
+    logger.info(f"تتبع السعر اللحظي (Trailing Stop): تفعيل عند +{TRAILING_ACTIVATION_PCT}% | ارتداد للبيع: {TRAILING_CALLBACK_PCT}%")
+    logger.info(f"معيار منع تجمد العملة (Anti-Stagnation): إغلاق بعد {MAX_HOLD_TIME_SEC // 60} دقيقة إذا كان العائد <= +{STAGNANT_EXIT_PCT}%")
+    logger.info(f"هدف وقف الخسارة الصارم (Emergency SL): -{STOP_LOSS_PCT}%")
+    logger.info("=" * 65)
 
     exchange = init_exchange()
 
-    # --------------------------------------------------------
-    # Load markets
-    # --------------------------------------------------------
-
+    # تحميل الأسواق والتحقق من الزوج وحدود التداول
     try:
         markets = exchange.load_markets()
-
         if SYMBOL not in markets:
-            raise RuntimeError(
-                f"{SYMBOL} is not available on Binance Spot."
-            )
-
+            logger.error(f"الرمز {SYMBOL} غير متاح في أسواق Binance Spot!")
+            sys.exit(1)
         market = markets[SYMBOL]
-
-        if not market.get("spot", True):
-            raise RuntimeError(
-                f"{SYMBOL} is not configured as a Spot market."
-            )
-
-        min_notional = get_min_notional(
-            market
-        )
-
-        amount_minimum = get_amount_minimum(
-            market
-        )
-
-        logger.info(
-            "Market validated: %s",
-            SYMBOL,
-        )
-
-        logger.info(
-            "Minimum order cost: %.8f USDT",
-            min_notional,
-        )
-
-        logger.info(
-            "Minimum amount: %.12f",
-            amount_minimum,
-        )
-
-    except Exception as error:
-        logger.error(
-            "Could not initialize Binance markets: %s",
-            error,
-            exc_info=True,
-        )
-        raise
+        min_notional = get_min_notional(market)
+        logger.info(f"تم فحص حدود الزوج بنجاح: الحد الأدنى لقيمة الصفقة (min_notional) هو: {min_notional} USDT")
+    except Exception as e:
+        logger.error(f"فشل أثناء تحميل بيانات الأسواق من Binance: {e}")
+        sys.exit(1)
 
     positions = load_positions()
-
-    logger.info(
-        "Loaded %d saved position(s).",
-        len(positions),
-    )
+    logger.info(f"تم تحميل {len(positions)} صفقة نشطة سابقة من الذاكرة/الملف.")
 
     last_buy_timestamp = 0.0
 
-    # ========================================================
-    # Continuous loop
-    # ========================================================
-
     while True:
-
         try:
             now_ts = time.time()
 
-            # ------------------------------------------------
-            # 1. Ticker
-            # ------------------------------------------------
+            # 1. جلب السعر اللحظي ومراقبة الفرق السعري (Spread)
+            ticker = exchange.fetch_ticker(SYMBOL)
+            current_price = float(ticker['last'])
+            bid_price = float(ticker['bid']) if ticker.get('bid') else current_price
+            ask_price = float(ticker['ask']) if ticker.get('ask') else current_price
+            spread_pct = ((ask_price - bid_price) / current_price) * 100.0 if current_price > 0 else 0.0
 
-            ticker = exchange.fetch_ticker(
-                SYMBOL
-            )
-
-            current_price = float(
-                ticker.get("last") or 0.0
-            )
-
-            bid_price = float(
-                ticker.get("bid")
-                or current_price
-            )
-
-            ask_price = float(
-                ticker.get("ask")
-                or current_price
-            )
-
-            if current_price <= 0:
-                raise RuntimeError(
-                    "Binance returned an invalid current price."
-                )
-
-            spread_pct = 0.0
-
-            if bid_price > 0 and ask_price > 0:
-                spread_pct = (
-                    (ask_price - bid_price)
-                    / current_price
-                    * 100.0
-                )
-
-            # ------------------------------------------------
-            # 2. Balance
-            # ------------------------------------------------
-
+            # 2. جلب الأرصدة المتاحة
             balance = exchange.fetch_balance()
+            free_usdt = float(balance['free'].get('USDT', 0.0))
+            free_btc = float(balance['free'].get('BTC', 0.0))
+            total_usdt_est = free_usdt + (free_btc * current_price)
 
-            free_balances = balance.get(
-                "free",
-                {},
-            )
+            # طباعة لوحة المراقبة اللحظية
+            logger.info("-" * 65)
+            logger.info(f"[مراقبة لحظية] السعر: ${current_price:,.2f} | السبريد: {spread_pct:.3f}% | الرصيد: {free_usdt:.2f} USDT | {free_btc:.6f} BTC (~${total_usdt_est:.2f})")
+            logger.info(f"الصفقات النشطة حالياً: {len(positions)} / {MAX_POSITIONS}")
 
-            free_usdt = float(
-                free_balances.get(
-                    "USDT",
-                    0.0,
-                )
-                or 0.0
-            )
-
-            base_currency = SYMBOL.split(
-                "/"
-            )[0]
-
-            free_base = float(
-                free_balances.get(
-                    base_currency,
-                    0.0,
-                )
-                or 0.0
-            )
-
-            total_usdt_estimate = (
-                free_usdt
-                + (
-                    free_base
-                    * current_price
-                )
-            )
-
-            logger.info(
-                "PRICE=%s | spread=%.3f%% | "
-                "free_USDT=%.4f | %s=%.8f | "
-                "estimated_total=%.2f",
-                f"${current_price:,.2f}",
-                spread_pct,
-                free_usdt,
-                base_currency,
-                free_base,
-                total_usdt_estimate,
-            )
-
-            # ------------------------------------------------
-            # 3. Manage existing positions
-            # ------------------------------------------------
-
+            # ==========================================
+            # 3. إدارة وتتبع الصفقات المفتوحة (Trailing & TP & SL & Anti-Stagnation)
+            # ==========================================
             remaining_positions = []
+            for i, pos in enumerate(positions, 1):
+                entry_price = float(pos['entry_price'])
+                amount = float(pos['amount'])
+                created_at_ts = float(pos.get('created_at_ts', now_ts))
+                highest_price = float(pos.get('highest_price', entry_price))
+                trailing_active = bool(pos.get('trailing_active', False))
 
-            for index, position in enumerate(
-                positions,
-                start=1,
-            ):
-
-                try:
-                    entry_price = float(
-                        position["entry_price"]
-                    )
-
-                    amount = float(
-                        position["amount"]
-                    )
-
-                    created_at_ts = float(
-                        position.get(
-                            "created_at_ts",
-                            now_ts,
-                        )
-                    )
-
-                except (
-                    KeyError,
-                    TypeError,
-                    ValueError,
-                ) as error:
-
-                    logger.error(
-                        "Invalid position #%d: %s",
-                        index,
-                        error,
-                    )
-
-                    continue
-
-                if entry_price <= 0 or amount <= 0:
-                    logger.error(
-                        "Invalid position #%d values.",
-                        index,
-                    )
-                    continue
-
-                highest_price = max(
-                    float(
-                        position.get(
-                            "highest_price",
-                            entry_price,
-                        )
-                    ),
-                    entry_price,
-                )
-
-                trailing_active = bool(
-                    position.get(
-                        "trailing_active",
-                        False,
-                    )
-                )
-
+                # تحديث القمة اللحظية المحققة للصفقة (High-Water Mark)
                 if current_price > highest_price:
                     highest_price = current_price
+                    pos['highest_price'] = highest_price
 
-                position["highest_price"] = (
-                    highest_price
-                )
+                pnl_pct = ((current_price - entry_price) / entry_price) * 100.0
+                peak_gain_pct = ((highest_price - entry_price) / entry_price) * 100.0
+                drop_from_peak_pct = ((highest_price - current_price) / highest_price) * 100.0 if highest_price > 0 else 0.0
+                hold_duration_sec = now_ts - created_at_ts
+                hold_mins = int(hold_duration_sec // 60)
 
-                pnl_pct = (
-                    (current_price - entry_price)
-                    / entry_price
-                    * 100.0
-                )
-
-                peak_gain_pct = (
-                    (highest_price - entry_price)
-                    / entry_price
-                    * 100.0
-                )
-
-                drop_from_peak_pct = 0.0
-
-                if highest_price > 0:
-                    drop_from_peak_pct = (
-                        (highest_price - current_price)
-                        / highest_price
-                        * 100.0
-                    )
-
-                hold_duration_sec = max(
-                    0.0,
-                    now_ts - created_at_ts,
-                )
-
-                hold_minutes = int(
-                    hold_duration_sec // 60
-                )
-
-                # --------------------------------------------
-                # Trailing activation
-                # --------------------------------------------
-
-                if (
-                    TRAILING_STOP_ENABLED
-                    and peak_gain_pct
-                    >= TRAILING_ACTIVATION_PCT
-                ):
+                # تفعيل التتبع اللحظي بمجرد الوصول لهدف البداية
+                if TRAILING_STOP_ENABLED and peak_gain_pct >= TRAILING_ACTIVATION_PCT:
                     if not trailing_active:
-                        logger.info(
-                            "Trailing activated for "
-                            "position #%d at +%.3f%%.",
-                            index,
-                            peak_gain_pct,
-                        )
-
+                        logger.info(f"🎯 تفعيل تتبع الأرباح اللحظي (Trailing Active) للصفقة #{i}! القمة الحالية: ${highest_price:,.2f} (+{peak_gain_pct:.2f}%)")
                     trailing_active = True
+                    pos['trailing_active'] = True
 
-                position["trailing_active"] = (
-                    trailing_active
-                )
+                trail_status = f" | [Trailing نشط - ارتداد: {drop_from_peak_pct:.2f}%]" if trailing_active else ""
+                logger.info(f"  └─ صفقة #{i} | دخول: ${entry_price:,.2f} | قمة: ${highest_price:,.2f} | العائد: {pnl_pct:+.2f}% | مدة: {hold_mins}د{trail_status}")
 
-                logger.info(
-                    "Position #%d | entry=%.2f | "
-                    "peak=%.2f | pnl=%+.3f%% | "
-                    "hold=%dm | trailing=%s",
-                    index,
-                    entry_price,
-                    highest_price,
-                    pnl_pct,
-                    hold_minutes,
-                    trailing_active,
-                )
-
-                # --------------------------------------------
-                # A. Trailing exit
-                # --------------------------------------------
-
-                if (
-                    trailing_active
-                    and drop_from_peak_pct
-                    >= TRAILING_CALLBACK_PCT
-                ):
-
-                    success, _, _ = (
-                        execute_market_sell(
-                            exchange,
-                            amount,
-                            "trailing",
-                            current_price,
-                            entry_price,
-                        )
-                    )
-
-                    if success:
+                # أ) جني الأرباح عبر التتبع اللحظي (Trailing Take Profit) عند ارتداد السعر عن أعلى قمة
+                if trailing_active and drop_from_peak_pct >= TRAILING_CALLBACK_PCT:
+                    logger.info(f"📈 ارتداد السعر بمقدار {drop_from_peak_pct:.2f}% من أعلى قمة (${highest_price:,.2f}) للصفقة #{i}! جارٍ حجز الأرباح اللحظية فوراً بالبيع...")
+                    try:
+                        sell_amount = float(exchange.amount_to_precision(SYMBOL, amount))
+                        executed_price = current_price
+                        order_id = f"sim_tp_{int(now_ts)}"
+                        if LIVE_TRADING:
+                            sell_order = exchange.create_market_sell_order(SYMBOL, sell_amount)
+                            executed_price = float(sell_order.get('average', current_price))
+                            order_id = sell_order.get('id')
+                        actual_pnl = ((executed_price - entry_price) / entry_price) * 100.0
+                        logger.info(f"🏆 تم تنفيذ أمر حجز الأرباح (Trailing Exit) بنجاح! القمة: ${highest_price:,.2f} | البيع: ${executed_price:,.2f} | الربح الصافي: {actual_pnl:+.2f}%")
+                        continue
+                    except Exception as err:
+                        logger.error(f"❌ فشل تنفيذ Trailing Take Profit: {err}")
+                        remaining_positions.append(pos)
                         continue
 
-                # --------------------------------------------
-                # B. Stop loss
-                # --------------------------------------------
-
-                if pnl_pct <= -STOP_LOSS_PCT:
-
-                    success, _, _ = (
-                        execute_market_sell(
-                            exchange,
-                            amount,
-                            "stop_loss",
-                            current_price,
-                            entry_price,
-                        )
-                    )
-
-                    if success:
+                # ج) وقف الخسارة الصارم (Stop Loss)
+                elif pnl_pct <= -STOP_LOSS_PCT:
+                    logger.warning(f"⚠️ هبوط السعر إلى حد وقف الخسارة ({pnl_pct:.2f}% <= -{STOP_LOSS_PCT}%) للصفقة #{i}! جارٍ إيقاف النزيف بالبيع الفوري...")
+                    try:
+                        sell_amount = float(exchange.amount_to_precision(SYMBOL, amount))
+                        executed_price = current_price
+                        order_id = f"sim_sl_{int(now_ts)}"
+                        if LIVE_TRADING:
+                            sell_order = exchange.create_market_sell_order(SYMBOL, sell_amount)
+                            executed_price = float(sell_order.get('average', current_price))
+                            order_id = sell_order.get('id')
+                        actual_loss = ((executed_price - entry_price) / entry_price) * 100.0
+                        logger.info(f"🛑 تم تنفيذ أمر وقف الخسارة بنجاح. رقم الطلب: {order_id} | سعر التنفيذ: ${executed_price:,.2f} | نسبة الخسارة: {actual_loss:.2f}%")
+                        continue
+                    except Exception as err:
+                        logger.error(f"❌ فشل تنفيذ أمر وقف الخسارة: {err}")
+                        remaining_positions.append(pos)
                         continue
 
-                # --------------------------------------------
-                # C. Anti stagnation
-                # --------------------------------------------
-
-                stagnation_condition = (
-                    pnl_pct <= STAGNANT_EXIT_PCT
-                    or pnl_pct
-                    < TRAILING_ACTIVATION_PCT
-                )
-
-                if (
-                    MAX_HOLD_TIME_SEC > 0
-                    and hold_duration_sec
-                    >= MAX_HOLD_TIME_SEC
-                    and stagnation_condition
-                ):
-
-                    success, _, _ = (
-                        execute_market_sell(
-                            exchange,
-                            amount,
-                            "anti_stagnation",
-                            current_price,
-                            entry_price,
-                        )
-                    )
-
-                    if success:
+                # د) معيار عدم تجمد العملة (Anti-Stagnation Release)
+                elif MAX_HOLD_TIME_SEC > 0 and hold_duration_sec >= MAX_HOLD_TIME_SEC and (pnl_pct <= STAGNANT_EXIT_PCT or pnl_pct < TRAILING_ACTIVATION_PCT):
+                    logger.warning(f"⏳ معيار منع تجمد العملة: مضى {hold_mins} دقيقة والصفقة متجمدة (عائد {pnl_pct:+.2f}% ضمن نطاق الركود). جارٍ تسييل الصفقة لتحرير رأس المال...")
+                    try:
+                        sell_amount = float(exchange.amount_to_precision(SYMBOL, amount))
+                        executed_price = current_price
+                        order_id = f"sim_antifreeze_{int(now_ts)}"
+                        if LIVE_TRADING:
+                            sell_order = exchange.create_market_sell_order(SYMBOL, sell_amount)
+                            executed_price = float(sell_order.get('average', current_price))
+                            order_id = sell_order.get('id')
+                        actual_pnl = ((executed_price - entry_price) / entry_price) * 100.0
+                        logger.info(f"🔓 تم تسييل الصفقة المتجمدة بنجاح لتحرير السيولة! سعر التنفيذ: ${executed_price:,.2f} | النتيجة: {actual_pnl:+.2f}%")
+                        continue
+                    except Exception as err:
+                        logger.error(f"❌ فشل تسييل الصفقة المتجمدة: {err}")
+                        remaining_positions.append(pos)
                         continue
 
-                remaining_positions.append(
-                    position
-                )
+                else:
+                    # تحديث بيانات المراقبة في الذاكرة
+                    pos['highest_price'] = highest_price
+                    pos['trailing_active'] = trailing_active
+                    remaining_positions.append(pos)
 
-            # Save state after position management.
+            # تحديث قائمة الصفقات وحفظها
             if remaining_positions != positions:
                 positions = remaining_positions
                 save_positions(positions)
 
-            # ------------------------------------------------
-            # 4. New entry
-            # ------------------------------------------------
+            # ==========================================
+            # 4. فحص شروط فتح صفقة جديدة (Dip & Rebound Strategy)
+            # ==========================================
+            if len(positions) < MAX_POSITIONS:
+                effective_order_cost = max(TARGET_ORDER_USD, min_notional + 0.20)
+                time_since_last_buy = now_ts - last_buy_timestamp
+                is_cooldown_passed = time_since_last_buy >= BUY_COOLDOWN_SEC
 
-            if len(positions) >= MAX_POSITIONS:
-                logger.info(
-                    "Maximum active positions reached: "
-                    "%d/%d",
-                    len(positions),
-                    MAX_POSITIONS,
-                )
-
-            else:
-
-                effective_order_cost = max(
-                    TARGET_ORDER_USD,
-                    min_notional + 0.20,
-                )
-
-                time_since_buy = (
-                    now_ts
-                    - last_buy_timestamp
-                )
-
-                if (
-                    time_since_buy
-                    < BUY_COOLDOWN_SEC
-                ):
-
-                    remaining = int(
-                        BUY_COOLDOWN_SEC
-                        - time_since_buy
-                    )
-
-                    logger.info(
-                        "Buy cooldown active: %ds remaining.",
-                        remaining,
-                    )
-
-                elif (
-                    LIVE_TRADING
-                    and free_usdt
-                    < effective_order_cost
-                ):
-
-                    logger.info(
-                        "Insufficient USDT. "
-                        "Required=%.2f, available=%.2f",
-                        effective_order_cost,
-                        free_usdt,
-                    )
-
+                if not is_cooldown_passed:
+                    remaining_cooldown = int(BUY_COOLDOWN_SEC - time_since_last_buy)
+                    logger.info(f"⏳ فترة التهدئة بين الصفقات نشطة (متبقي {remaining_cooldown} ثانية قبل السماح بشراء جديد).")
+                elif free_usdt < effective_order_cost and LIVE_TRADING:
+                    logger.info(f"ℹ️ رصيد USDT غير كافٍ لفتح صفقة جديدة (المطلوب: {effective_order_cost:.2f} USDT | المتاح: {free_usdt:.2f} USDT).")
                 elif spread_pct > MAX_SPREAD_PCT:
-
-                    logger.info(
-                        "Spread protection active: "
-                        "%.3f%% > %.3f%%",
-                        spread_pct,
-                        MAX_SPREAD_PCT,
-                    )
-
+                    logger.info(f"🛡️ حماية من التجمد: السبريد مرتفع ({spread_pct:.3f}% > {MAX_SPREAD_PCT:.3f}%). تجنب الدخول لضعف السيولة اللحظية.")
                 else:
+                    # فحص الهبوط النسبي والارتداد التأكيدي من القاع
+                    try:
+                        ohlcv = exchange.fetch_ohlcv(SYMBOL, timeframe='1m', limit=20)
+                        if ohlcv and len(ohlcv) >= 10:
+                            highs = [c[2] for c in ohlcv]
+                            lows = [c[3] for c in ohlcv]
+                            closes = [c[4] for c in ohlcv]
 
-                    # ----------------------------------------
-                    # Market analysis
-                    # ----------------------------------------
+                            min_l = min(lows)
+                            max_h = max(highs)
+                            volatility_15m = ((max_h - min_l) / min_l) * 100.0 if min_l > 0 else 0.0
+                            current_rsi = calculate_rsi(closes, period=14)
 
-                    ohlcv = exchange.fetch_ohlcv(
-                        SYMBOL,
-                        timeframe="1m",
-                        limit=20,
-                    )
+                            recent_high = max(highs[-15:])
+                            recent_low = min(lows[-15:])
+                            dip_pct = ((recent_high - recent_low) / recent_high) * 100.0 if recent_high > 0 else 0.0
+                            rebound_pct = ((current_price - recent_low) / recent_low) * 100.0 if recent_low > 0 else 0.0
 
-                    if not ohlcv or len(ohlcv) < 15:
-                        logger.info(
-                            "Not enough candle data yet."
-                        )
+                            logger.info(f"📊 التحليل اللحظي: تقلب 15د: {volatility_15m:.2f}% | هبوط: {dip_pct:.2f}% | ارتداد: +{rebound_pct:.2f}% | RSI: {current_rsi:.1f}")
 
-                    else:
+                            volatility_ok = (volatility_15m >= MIN_VOLATILITY_PCT)
+                            dip_ok = (dip_pct >= BUY_DIP_MIN_PCT) or (BUY_DIP_MIN_PCT <= 0)
+                            rebound_ok = (rebound_pct >= BUY_REBOUND_CONFIRM_PCT) or (BUY_REBOUND_CONFIRM_PCT <= 0)
+                            rsi_ok = (current_rsi <= BUY_RSI_MAX)
+                            not_at_peak = (current_price <= recent_high)
 
-                        highs = [
-                            float(candle[2])
-                            for candle in ohlcv
-                        ]
-
-                        lows = [
-                            float(candle[3])
-                            for candle in ohlcv
-                        ]
-
-                        closes = [
-                            float(candle[4])
-                            for candle in ohlcv
-                        ]
-
-                        minimum_low = min(lows)
-                        maximum_high = max(highs)
-
-                        volatility_pct = 0.0
-
-                        if minimum_low > 0:
-                            volatility_pct = (
-                                (
-                                    maximum_high
-                                    - minimum_low
-                                )
-                                / minimum_low
-                                * 100.0
-                            )
-
-                        current_rsi = calculate_rsi(
-                            closes,
-                            period=14,
-                        )
-
-                        recent_high = max(
-                            highs[-15:]
-                        )
-
-                        recent_low = min(
-                            lows[-15:]
-                        )
-
-                        dip_pct = 0.0
-                        rebound_pct = 0.0
-
-                        if recent_high > 0:
-                            dip_pct = (
-                                (
-                                    recent_high
-                                    - recent_low
-                                )
-                                / recent_high
-                                * 100.0
-                            )
-
-                        if recent_low > 0:
-                            rebound_pct = (
-                                (
-                                    current_price
-                                    - recent_low
-                                )
-                                / recent_low
-                                * 100.0
-                            )
-
-                        logger.info(
-                            "Analysis | volatility=%.3f%% | "
-                            "dip=%.3f%% | rebound=%.3f%% | "
-                            "RSI=%.2f",
-                            volatility_pct,
-                            dip_pct,
-                            rebound_pct,
-                            current_rsi,
-                        )
-
-                        volatility_ok = (
-                            volatility_pct
-                            >= MIN_VOLATILITY_PCT
-                        )
-
-                        dip_ok = (
-                            dip_pct
-                            >= BUY_DIP_MIN_PCT
-                        )
-
-                        rebound_ok = (
-                            rebound_pct
-                            >= BUY_REBOUND_CONFIRM_PCT
-                        )
-
-                        rsi_ok = (
-                            current_rsi
-                            <= BUY_RSI_MAX
-                        )
-
-                        not_at_peak = (
-                            current_price
-                            <= recent_high
-                        )
-
-                        if not volatility_ok:
-                            logger.info(
-                                "Entry rejected: "
-                                "insufficient volatility."
-                            )
-
-                        elif not dip_ok:
-                            logger.info(
-                                "Entry rejected: "
-                                "dip condition not met."
-                            )
-
-                        elif not rebound_ok:
-                            logger.info(
-                                "Entry rejected: "
-                                "rebound confirmation not met."
-                            )
-
-                        elif not rsi_ok:
-                            logger.info(
-                                "Entry rejected: RSI %.2f > %.2f.",
-                                current_rsi,
-                                BUY_RSI_MAX,
-                            )
-
-                        elif not not_at_peak:
-                            logger.info(
-                                "Entry rejected: "
-                                "price is at recent peak."
-                            )
-
-                        else:
-
-                            # --------------------------------
-                            # Calculate order amount
-                            # --------------------------------
-
-                            raw_amount = (
-                                effective_order_cost
-                                / ask_price
-                            )
-
-                            buy_amount = float(
-                                exchange.amount_to_precision(
-                                    SYMBOL,
-                                    raw_amount,
-                                )
-                            )
-
-                            if (
-                                amount_minimum > 0
-                                and buy_amount
-                                < amount_minimum
-                            ):
-                                buy_amount = float(
-                                    exchange.amount_to_precision(
-                                        SYMBOL,
-                                        amount_minimum,
-                                    )
-                                )
-
-                            estimated_cost = (
-                                buy_amount
-                                * ask_price
-                            )
-
-                            if (
-                                buy_amount <= 0
-                                or estimated_cost
-                                < min_notional
-                            ):
-                                logger.warning(
-                                    "Calculated order is below "
-                                    "Binance minimum: "
-                                    "amount=%.12f, cost=%.8f.",
-                                    buy_amount,
-                                    estimated_cost,
-                                )
-
+                            if not volatility_ok:
+                                logger.info(f"😴 السوق هادئ/متجمد حالياً ({volatility_15m:.2f}% < {MIN_VOLATILITY_PCT}%). في انتظار حركة نشطة.")
+                            elif not dip_ok:
+                                logger.info(f"⏳ لم يتحقق شرط الهبوط النسبي ({dip_pct:.2f}% < {BUY_DIP_MIN_PCT}%).")
+                            elif not rebound_ok:
+                                logger.info(f"⏳ في انتظار تأكيد الارتداد من القاع ({rebound_pct:.2f}% < {BUY_REBOUND_CONFIRM_PCT}%).")
+                            elif not rsi_ok:
+                                logger.info(f"⏳ مؤشر RSI مرتفع نسبياً ({current_rsi:.1f} > {BUY_RSI_MAX}). تجنب الشراء عند قمم التشبع.")
+                            elif not not_at_peak:
+                                logger.info("⏳ السعر عند قمة الشموع الأخيرة، في انتظار تشكل قاع جديد.")
                             else:
+                                raw_amount = effective_order_cost / ask_price
+                                amount_str = exchange.amount_to_precision(SYMBOL, raw_amount)
+                                buy_amount = float(amount_str)
+                                estimated_cost = buy_amount * ask_price
 
-                                mode = (
-                                    "LIVE"
-                                    if LIVE_TRADING
-                                    else "SIMULATION"
-                                )
+                                if estimated_cost < min_notional:
+                                    amount_step = market.get('precision', {}).get('amount', 8)
+                                    min_qty_step = 10 ** (-amount_step)
+                                    buy_amount += min_qty_step
+                                    buy_amount = float(exchange.amount_to_precision(SYMBOL, buy_amount))
 
-                                logger.info(
-                                    "BUY signal confirmed | "
-                                    "mode=%s | amount=%.8f | "
-                                    "estimated cost=%.4f USDT",
-                                    mode,
-                                    buy_amount,
-                                    estimated_cost,
-                                )
+                                order_mode = "حقيقي (Live)" if LIVE_TRADING else "محاكاة (Simulation)"
+                                logger.info(f"🚀 تأكيد الارتداد اللحظي! تنفيذ شراء {order_mode}: {buy_amount:.6f} BTC (~${effective_order_cost:.2f} USDT)...")
 
-                                # ----------------------------
-                                # Execute buy
-                                # ----------------------------
-
-                                filled_price = (
-                                    ask_price
-                                )
-
-                                filled_quantity = (
-                                    buy_amount
-                                )
-
-                                total_cost = (
-                                    filled_price
-                                    * filled_quantity
-                                )
-
-                                order_id = (
-                                    f"sim_buy_"
-                                    f"{int(now_ts)}"
-                                )
+                                filled_price = ask_price
+                                filled_qty = buy_amount
+                                total_cost = filled_price * filled_qty
+                                order_id = f"sim_buy_{int(now_ts)}"
 
                                 if LIVE_TRADING:
+                                    buy_order = exchange.create_market_buy_order(SYMBOL, buy_amount)
+                                    filled_price = float(buy_order.get('average', ask_price))
+                                    filled_qty = float(buy_order.get('filled', buy_amount))
+                                    total_cost = filled_price * filled_qty
+                                    order_id = buy_order.get('id')
 
-                                    buy_order = (
-                                        exchange.create_market_buy_order(
-                                            SYMBOL,
-                                            buy_amount,
-                                        )
-                                    )
-
-                                    filled_price = float(
-                                        buy_order.get(
-                                            "average"
-                                        )
-                                        or buy_order.get(
-                                            "price"
-                                        )
-                                        or ask_price
-                                    )
-
-                                    filled_quantity = float(
-                                        buy_order.get(
-                                            "filled"
-                                        )
-                                        or buy_amount
-                                    )
-
-                                    total_cost = (
-                                        filled_price
-                                        * filled_quantity
-                                    )
-
-                                    order_id = str(
-                                        buy_order.get(
-                                            "id"
-                                        )
-                                        or "unknown"
-                                    )
+                                logger.info(f"✅ تم تنفيذ الشراء بنجاح! رقم الطلب: {order_id} | سعر الدخول: ${filled_price:,.2f} | التكلفة: {total_cost:.2f} USDT")
 
                                 new_position = {
                                     "id": order_id,
                                     "symbol": SYMBOL,
-                                    "side": "buy",
-                                    "amount": filled_quantity,
+                                    "amount": filled_qty,
                                     "entry_price": filled_price,
                                     "highest_price": filled_price,
                                     "cost": total_cost,
-                                    "timestamp": datetime.now(
-                                        timezone.utc
-                                    ).isoformat(),
+                                    "timestamp": datetime.utcnow().isoformat(),
                                     "created_at_ts": now_ts,
                                     "trailing_active": False,
+                                    "side": "buy"
                                 }
+                                positions.append(new_position)
+                                save_positions(positions)
+                                last_buy_timestamp = now_ts
+                    except Exception as buy_err:
+                        logger.error(f"❌ خطأ أثناء تقييم أو تنفيذ أمر الشراء: {buy_err}")
+            else:
+                logger.info(f"🔒 تم بلوغ الحد الأقصى للصفقات المتزامنة ({MAX_POSITIONS}/{MAX_POSITIONS}). في انتظار جني الأرباح أو تسييل عدم التجمد.")
 
-                                positions.append(
-                                    new_position
-                                )
-
-                                save_positions(
-                                    positions
-                                )
-
-                                last_buy_timestamp = (
-                                    now_ts
-                                )
-
-                                logger.info(
-                                    "BUY completed | "
-                                    "order=%s | price=%.8f | "
-                                    "amount=%.8f | "
-                                    "cost=%.4f USDT",
-                                    order_id,
-                                    filled_price,
-                                    filled_quantity,
-                                    total_cost,
-                                )
-
-        # ====================================================
-        # Binance errors
-        # ====================================================
-
-        except ccxt.RateLimitExceeded as error:
-
-            logger.warning(
-                "Binance rate limit reached: %s",
-                error,
-            )
-
+        except ccxt.RateLimitExceeded as rle:
+            logger.warning(f"⚠️ تم تجاوز معدل طلبات بينانس (Rate Limit Exceeded): {rle}. سيتم التوقف مؤقتاً لمدة 60 ثانية لحماية الحساب...")
             time.sleep(60)
-
-        except (
-            ccxt.NetworkError,
-            ccxt.RequestTimeout,
-        ) as error:
-
-            logger.warning(
-                "Temporary Binance network error: %s",
-                error,
-            )
-
+        except (ccxt.NetworkError, ccxt.RequestTimeout) as ne:
+            logger.warning(f"⚠️ خطأ مؤقت في الاتصال بالشبكة مع بينانس: {ne}. جارٍ الانتظار وإعادة المحاولة تلقائياً...")
             time.sleep(15)
-
-        except ccxt.InsufficientFunds as error:
-
-            logger.error(
-                "Insufficient Binance balance: %s",
-                error,
-            )
-
+        except ccxt.InsufficientFunds as ife:
+            logger.error(f"❌ رصيد غير كافٍ لتنفيذ المعاملة: {ife}. سيتم الاستمرار في فحص الصفقات القائمة.")
             time.sleep(20)
-
-        except ccxt.AuthenticationError as error:
-
-            logger.error(
-                "Binance authentication failed: %s",
-                error,
-            )
-
-            logger.error(
-                "Check BINANCE_API_KEY and BINANCE_API_SECRET."
-            )
-
-            time.sleep(60)
-
-        except ccxt.ExchangeError as error:
-
-            logger.error(
-                "Binance exchange error: %s",
-                error,
-            )
-
+        except ccxt.ExchangeError as ee:
+            logger.error(f"❌ خطأ مسترجع من خادم Binance Spot: {ee}")
             time.sleep(10)
-
         except KeyboardInterrupt:
-
-            logger.info(
-                "Bot stopped manually."
-            )
-
-            save_positions(
-                positions
-            )
-
+            logger.info("🛑 تم إيقاف البوت يدوياً من قبل المستخدم. جارٍ الحفظ والخروج بأمان...")
+            save_positions(positions)
             break
-
-        except Exception as error:
-
-            logger.error(
-                "Unexpected error: %s",
-                error,
-                exc_info=True,
-            )
-
+        except Exception as general_err:
+            logger.error(f"⚠️ حدث خطأ غير متوقع: {general_err}", exc_info=True)
             time.sleep(10)
 
-        time.sleep(
-            LOOP_INTERVAL_SEC
-        )
+        # انتظار الفاصل الزمني المحدد قبل بدء الدورة التالية
+        time.sleep(LOOP_INTERVAL_SEC)
 
-
-# ============================================================
-# 11. Entry point
-# ============================================================
 
 if __name__ == "__main__":
     main()
