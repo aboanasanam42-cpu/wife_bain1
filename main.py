@@ -1,11 +1,8 @@
-import urllib.request
-ip = urllib.request.urlopen('https://api.ipify.org').read().decode()
-print(f"MY_CURRENT_IP: {ip}")
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Binance Spot 24/7 Cloud Trading Bot (BTC/USDT)
-Designed for continuous 24/7 execution on cloud platforms (e.g., Bot-Hosting.net, VPS, Docker).
+Optimized for 24/7 continuous worker deployment on Railway, Docker, or VPS.
 """
 
 import os
@@ -13,9 +10,18 @@ import sys
 import time
 import json
 import logging
+import urllib.request
 from datetime import datetime
 import ccxt
 from dotenv import load_dotenv
+
+# Print current public IP safely (useful for Binance API IP whitelisting on Railway/VPS)
+try:
+    _ip_req = urllib.request.Request("https://api.ipify.org", headers={"User-Agent": "Mozilla/5.0"})
+    current_public_ip = urllib.request.urlopen(_ip_req, timeout=5).read().decode().strip()
+    print(f"MY_CURRENT_IP: {current_public_ip}")
+except Exception as _ip_err:
+    print(f"Notice: Could not fetch public IP ({_ip_err})")
 
 # تحميل متغيرات البيئة من ملف .env في حال وجوده محلياً
 load_dotenv()
@@ -35,34 +41,40 @@ logger = logging.getLogger("BinanceSpotBot")
 # ==========================================
 # 2. قراءة المتغيرات البيئية والإعدادات
 # ==========================================
-# دعم الاسمين BINANCE_API_KEY و BINANCE_KEY لمرونة كاملة
-API_KEY = (os.environ.get("BINANCE_API_KEY") or os.environ.get("BINANCE_KEY") or "").strip()
-API_SECRET = (os.environ.get("BINANCE_API_SECRET") or os.environ.get("BINANCE_SECRET") or "").strip()
+def sanitize_key(key):
+    if not key:
+        return ""
+    cleaned = key.strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in "\"'":
+        cleaned = cleaned[1:-1].strip()
+    return "".join(c for c in cleaned if c.isprintable() and not c.isspace())
+
+API_KEY = sanitize_key(os.environ.get("BINANCE_API_KEY") or os.environ.get("BINANCE_KEY") or "")
+API_SECRET = sanitize_key(os.environ.get("BINANCE_API_SECRET") or os.environ.get("BINANCE_SECRET") or "")
 
 SYMBOL = os.environ.get("SYMBOL", "BTC/USDT").strip()
-TARGET_ORDER_USD = float(os.environ.get("TARGET_ORDER_USD", "10.0").strip())  # القيمة المستهدفة بالدولار
-LIVE_TRADING = os.environ.get("LIVE_TRADING", "true").strip().lower() in ("true", "1", "yes")
-MAX_POSITIONS = int(os.environ.get("MAX_POSITIONS", "1").strip())            # الحد الأقصى للصفقات المتزامنة
-LOOP_INTERVAL_SEC = int(os.environ.get("LOOP_INTERVAL_SEC", "10").strip())   # وقت الانتظار بين الدورات بالثواني
-BUY_COOLDOWN_SEC = int(os.environ.get("BUY_COOLDOWN_SEC", "60").strip())     # فاصل زمني بين عمليات الشراء
+TARGET_ORDER_USD = float(os.environ.get("TARGET_ORDER_USD", "5.5").strip())
+LIVE_TRADING = os.environ.get("LIVE_TRADING", "false").strip().lower() in ("true", "1", "yes")
+MAX_POSITIONS = max(1, int(os.environ.get("MAX_POSITIONS", "1").strip()))
+LOOP_INTERVAL_SEC = max(3, int(os.environ.get("LOOP_INTERVAL_SEC", "10").strip()))
+BUY_COOLDOWN_SEC = max(0, int(os.environ.get("BUY_COOLDOWN_SEC", "30").strip()))
 
 # إعدادات الشراء عند الارتداد من القاع (Dip & Rebound)
-BUY_DIP_MIN_PCT = float(os.environ.get("BUY_DIP_MIN_PCT", "0.3").strip())
-BUY_REBOUND_CONFIRM_PCT = float(os.environ.get("BUY_REBOUND_CONFIRM_PCT", "0.1").strip())
-BUY_RSI_MAX = float(os.environ.get("BUY_RSI_MAX", "45").strip())
+BUY_DIP_MIN_PCT = max(0.0, float(os.environ.get("BUY_DIP_MIN_PCT", "0.25").strip()))
+BUY_REBOUND_CONFIRM_PCT = max(0.0, float(os.environ.get("BUY_REBOUND_CONFIRM_PCT", "0.08").strip()))
+BUY_RSI_MAX = float(os.environ.get("BUY_RSI_MAX", "48").strip())
+MIN_VOLATILITY_PCT = max(0.0, float(os.environ.get("MIN_VOLATILITY_PCT", "0.20").strip()))
+MAX_SPREAD_PCT = max(0.0, float(os.environ.get("MAX_SPREAD_PCT", "0.15").strip()))
 
-# إعدادات تتبع السعر اللحظي (Trailing Take Profit & Stop Loss)
+# إعدادات تتبع السعر اللحظي (Trailing High-Water Take Profit & Emergency Stop)
 TRAILING_STOP_ENABLED = os.environ.get("TRAILING_STOP_ENABLED", "true").strip().lower() in ("true", "1", "yes")
-TRAILING_ACTIVATION_PCT = float(os.environ.get("TRAILING_ACTIVATION_PCT", "0.4").strip())  # تفعيل التتبع عند ربح +0.4%
-TRAILING_CALLBACK_PCT = float(os.environ.get("TRAILING_CALLBACK_PCT", "0.15").strip())     # إغلاق الصفقة عند هبوط 0.15% من القمة
-STOP_LOSS_PCT = float(os.environ.get("STOP_LOSS_PCT", "0.8").strip())                      # نسبة وقف الخسارة الصارم -0.8%
-TAKE_PROFIT_PCT = float(os.environ.get("TAKE_PROFIT_PCT", "1.5").strip())                  # هدف جني الأرباح المباشر السريع +1.5%
+TRAILING_ACTIVATION_PCT = max(0.0, float(os.environ.get("TRAILING_ACTIVATION_PCT", "0.15").strip()))
+TRAILING_CALLBACK_PCT = max(0.0, float(os.environ.get("TRAILING_CALLBACK_PCT", "0.20").strip()))
+STOP_LOSS_PCT = max(0.01, float(os.environ.get("STOP_LOSS_PCT", "0.40").strip()))
 
-# معايير منع تجمد العملة والسيولة (Zero-Freeze & Anti-Stagnation)
-MAX_HOLD_TIME_SEC = int(os.environ.get("MAX_HOLD_TIME_SEC", "900").strip())               # أقصى مدة بقاء للصفقة الراكدة (15 دقيقة)
-STAGNANT_EXIT_PCT = float(os.environ.get("STAGNANT_EXIT_PCT", "-0.2").strip())             # تسييل الصفقة لتحرير السيولة عند الركود
-MAX_SPREAD_PCT = float(os.environ.get("MAX_SPREAD_PCT", "0.05").strip())                   # أقصى فارق بين العرض والطلب (0.05%)
-MIN_VOLATILITY_PCT = float(os.environ.get("MIN_VOLATILITY_PCT", "0.15").strip())           # أدنى نسبة تقلب في آخر 15 دقيقة (0.15%)
+# معايير منع تجمد العملة والسيولة (Anti-Stagnation / Capital Release)
+MAX_HOLD_TIME_SEC = max(0, int(os.environ.get("MAX_HOLD_TIME_SEC", "1200").strip()))
+STAGNANT_EXIT_PCT = float(os.environ.get("STAGNANT_EXIT_PCT", "0.00").strip())
 
 POSITIONS_FILE = "positions.json"
 
@@ -184,12 +196,11 @@ def calculate_rsi(closes, period=14):
 def main():
     logger.info("=" * 65)
     logger.info("بدء تشغيل بوت التداول الفوري السحابي (Binance Spot Bot)")
-    logger.info(f"الزوج المعتمد: {SYMBOL} (Spot حصراً)")
-    logger.info(f"أقصى عدد صفقات متزامنة: {MAX_POSITIONS}")
-    logger.info(f"هدف جني الأرباح السريع (Hard TP): +{TAKE_PROFIT_PCT}%")
+    logger.info(f"الزوج المعتمد: {SYMBOL} (Spot حصراً) | التداول الحقيقي: {LIVE_TRADING}")
+    logger.info(f"أقصى عدد صفقات متزامنة: {MAX_POSITIONS} | قيمة الصفقة: {TARGET_ORDER_USD} USDT")
     logger.info(f"تتبع السعر اللحظي (Trailing Stop): تفعيل عند +{TRAILING_ACTIVATION_PCT}% | ارتداد للبيع: {TRAILING_CALLBACK_PCT}%")
     logger.info(f"معيار منع تجمد العملة (Anti-Stagnation): إغلاق بعد {MAX_HOLD_TIME_SEC // 60} دقيقة إذا كان العائد <= +{STAGNANT_EXIT_PCT}%")
-    logger.info(f"هدف وقف الخسارة الصارم (SL): -{STOP_LOSS_PCT}%")
+    logger.info(f"هدف وقف الخسارة الصارم (Emergency SL): -{STOP_LOSS_PCT}%")
     logger.info("=" * 65)
 
     exchange = init_exchange()
@@ -266,27 +277,8 @@ def main():
                 trail_status = f" | [Trailing نشط - ارتداد: {drop_from_peak_pct:.2f}%]" if trailing_active else ""
                 logger.info(f"  └─ صفقة #{i} | دخول: ${entry_price:,.2f} | قمة: ${highest_price:,.2f} | العائد: {pnl_pct:+.2f}% | مدة: {hold_mins}د{trail_status}")
 
-                # أ) جني الأرباح المباشر السريع عند الصعود الناري (Hard TP)
-                if pnl_pct >= TAKE_PROFIT_PCT:
-                    logger.info(f"🎉 تحقق هدف جني الأرباح السريع (+{pnl_pct:.2f}% >= +{TAKE_PROFIT_PCT}%) للصفقة #{i}! تنفيذ البيع بالسوق...")
-                    try:
-                        sell_amount = float(exchange.amount_to_precision(SYMBOL, amount))
-                        executed_price = current_price
-                        order_id = f"sim_hardtp_{int(now_ts)}"
-                        if LIVE_TRADING:
-                            sell_order = exchange.create_market_sell_order(SYMBOL, sell_amount)
-                            executed_price = float(sell_order.get('average', current_price))
-                            order_id = sell_order.get('id')
-                        actual_pnl = ((executed_price - entry_price) / entry_price) * 100.0
-                        logger.info(f"✅ تم تنفيذ جني الأرباح بنجاح! رقم الطلب: {order_id} | سعر التنفيذ: ${executed_price:,.2f} | العائد المحقق: {actual_pnl:+.2f}%")
-                        continue
-                    except Exception as err:
-                        logger.error(f"❌ فشل تنفيذ أمر جني الأرباح: {err}")
-                        remaining_positions.append(pos)
-                        continue
-
-                # ب) جني الأرباح عبر التتبع اللحظي (Trailing Take Profit)
-                elif trailing_active and drop_from_peak_pct >= TRAILING_CALLBACK_PCT and pnl_pct >= 0.1:
+                # أ) جني الأرباح عبر التتبع اللحظي (Trailing Take Profit) عند ارتداد السعر عن أعلى قمة
+                if trailing_active and drop_from_peak_pct >= TRAILING_CALLBACK_PCT:
                     logger.info(f"📈 ارتداد السعر بمقدار {drop_from_peak_pct:.2f}% من أعلى قمة (${highest_price:,.2f}) للصفقة #{i}! جارٍ حجز الأرباح اللحظية فوراً بالبيع...")
                     try:
                         sell_amount = float(exchange.amount_to_precision(SYMBOL, amount))

@@ -22,8 +22,19 @@ LIVE_TRADING = os.environ.get("LIVE_TRADING", "false").strip().lower() in ("true
 
 def require_trigger_token(handler):
     """Accept the manual trade token or Vercel Cron's CRON_SECRET."""
-    auth = handler.headers.get("Authorization", "")
-    token = auth[7:].strip() if auth.lower().startswith("bearer ") else handler.headers.get("X-Trade-Token", "").strip()
+    if not TRADE_TRIGGER_TOKEN and not CRON_SECRET:
+        return
+    auth = handler.headers.get("Authorization", "").strip()
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if not token:
+        token = handler.headers.get("X-Trade-Token", "").strip() or handler.headers.get("X-Trigger-Token", "").strip()
+    if not token and "?" in handler.path:
+        try:
+            import urllib.parse
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+            token = (qs.get("token", [""])[0] or qs.get("secret", [""])[0]).strip()
+        except Exception:
+            pass
     if (TRADE_TRIGGER_TOKEN and token == TRADE_TRIGGER_TOKEN) or (CRON_SECRET and token == CRON_SECRET):
         return
     raise PermissionError("Unauthorized trade trigger")
@@ -251,27 +262,33 @@ def execute_trade_cycle():
                     buy_amount = float(exchange.amount_to_precision(symbol, raw_amount))
                     estimated_cost = buy_amount * ask
                     if estimated_cost < min_notional:
-                        raise ValueError(f"Order amount {estimated_cost:.4f} is below Binance min notional {min_notional:.4f}")
-                    try:
-                        order = create_market_order(exchange, "buy", symbol, buy_amount)
-                        filled = float(order.get("filled") or buy_amount)
-                        entry_price = float(order.get("average") or ask)
-                        positions.append({
-                            "id": order.get("id"), "symbol": symbol, "amount": filled,
-                            "entry_price": entry_price, "highest_price": entry_price,
-                            "cost": entry_price * filled, "timestamp": datetime.utcnow().isoformat(),
-                            "created_at_ts": now_ts, "trailing_active": False, "side": "buy"
-                        })
-                        save_positions(positions)
-                        actions.append({
-                            "action": "MARKET_BUY", "order_id": order.get("id"),
-                            "entry_price": entry_price, "amount": filled,
-                            "dip_pct": round(dip_pct, 3), "rebound_pct": round(rebound_pct, 3),
-                            "rsi": round(rsi, 2), "volatility_15m": round(volatility_pct, 3),
-                            "signal": "DIP + REBOUND CONFIRMED", "dry_run": bool(order.get("dry_run", False))
-                        })
-                    except Exception as exc:
-                        actions.append({"action": "BUY_FAILED", "error": str(exc)})
+                        amount_step = market.get("precision", {}).get("amount", 8)
+                        buy_amount += 10 ** (-amount_step)
+                        buy_amount = float(exchange.amount_to_precision(symbol, buy_amount))
+                        estimated_cost = buy_amount * ask
+                    if estimated_cost < min_notional:
+                        actions.append({"action": "HOLD", "reason": f"Order cost {estimated_cost:.4f} is below Binance min notional {min_notional:.4f}"})
+                    else:
+                        try:
+                            order = create_market_order(exchange, "buy", symbol, buy_amount)
+                            filled = float(order.get("filled") or buy_amount)
+                            entry_price = float(order.get("average") or ask)
+                            positions.append({
+                                "id": order.get("id"), "symbol": symbol, "amount": filled,
+                                "entry_price": entry_price, "highest_price": entry_price,
+                                "cost": entry_price * filled, "timestamp": datetime.utcnow().isoformat(),
+                                "created_at_ts": now_ts, "trailing_active": False, "side": "buy"
+                            })
+                            save_positions(positions)
+                            actions.append({
+                                "action": "MARKET_BUY", "order_id": order.get("id"),
+                                "entry_price": entry_price, "amount": filled,
+                                "dip_pct": round(dip_pct, 3), "rebound_pct": round(rebound_pct, 3),
+                                "rsi": round(rsi, 2), "volatility_15m": round(volatility_pct, 3),
+                                "signal": "DIP + REBOUND CONFIRMED", "dry_run": bool(order.get("dry_run", False))
+                            })
+                        except Exception as exc:
+                            actions.append({"action": "BUY_FAILED", "error": str(exc)})
             else:
                 actions.append({"action": "HOLD", "reason": "Insufficient 1m candle history"})
     else:
