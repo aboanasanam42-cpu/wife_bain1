@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+.venv/
+positions.json
+bot.log
+
+# Local and build files ignored from GitHub repository
+.gradle/
+build/
+.build-outputs/
+app/
+gradle/
+build.gradle.kts
+settings.gradle.kts
+metadata.json
+gradle.properties
+debug.keystore*
+

@@ -1,0 +1,11 @@
+[project]
+name = "binance-spot-scalper"
+version = "2.0.0"
+description = "Binance Spot 24/7 Autonomous Real-Time Scalper Bot deployed on Railway"
+requires-python = ">=3.10"
+dependencies = [
+  "ccxt>=4.1.0",
+  "python-dotenv>=1.0.0",
+  "requests>=2.31.0",
+  "urllib3>=2.0.0",
+]
